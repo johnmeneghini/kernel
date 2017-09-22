@@ -22,15 +22,17 @@ extern void xen_init_pt(void);
 extern void xen_switch_pt(void);
 #endif
 
+extern p4d_t level4_kernel_pgt[512];
+extern p4d_t level4_ident_pgt[512];
 extern pud_t level3_kernel_pgt[512];
 extern pud_t level3_ident_pgt[512];
 extern pmd_t level2_kernel_pgt[512];
 extern pmd_t level2_fixmap_pgt[512];
 extern pmd_t level2_ident_pgt[512];
 extern pte_t level1_fixmap_pgt[512];
-extern pgd_t init_level4_pgt[];
+extern pgd_t init_top_pgt[];
 
-#define swapper_pg_dir init_level4_pgt
+#define swapper_pg_dir init_top_pgt
 
 extern void paging_init(void);
 
@@ -44,6 +46,14 @@ extern void paging_init(void);
 	pr_err("%s:%d: bad pud %p(%016lx pfn %010Lx).\n",		\
 	       __FILE__, __LINE__, &(e), __pud_val(e),			\
 	       (pud_val(e) & __PHYSICAL_MASK) >> PAGE_SHIFT)
+
+#if CONFIG_PGTABLE_LEVELS >= 5
+#define p4d_ERROR(e)					\
+ 	pr_err("%s:%d: bad p4d %p(%016lx pfn %010Lx).\n",		\
+	       __FILE__, __LINE__, &(e), __p4d_val(e),			\
+	       (p4d_val(e) & __PHYSICAL_MASK) >> PAGE_SHIFT)
+#endif
+
 #define pgd_ERROR(e)							\
 	pr_err("%s:%d: bad pgd %p(%016lx pfn %010Lx).\n",		\
 	       __FILE__, __LINE__, &(e), __pgd_val(e),			\
@@ -51,8 +61,8 @@ extern void paging_init(void);
 
 struct mm_struct;
 
+void set_pte_vaddr_p4d(p4d_t *p4d_page, unsigned long vaddr, pte_t new_pte);
 void set_pte_vaddr_pud(pud_t *pud_page, unsigned long vaddr, pte_t new_pte);
-
 
 #define __xen_pte_clear(ptep) xen_set_pte(ptep, __pte(0))
 
@@ -124,23 +134,51 @@ static inline pud_t xen_pudp_get_and_clear(pud_t *xp)
 }
 #endif
 
+#ifndef CONFIG_X86_5LEVEL
+#define __user_p4d(p4d) container_of(__user_pgd(&(p4d)->pgd), p4d_t, pgd)
+#endif
+
+static inline void xen_set_p4d(p4d_t *p4dp, p4d_t p4d)
+{
+	xen_l4_entry_update(p4dp, p4d);
+}
+
+#ifdef CONFIG_X86_5LEVEL
+#define xen_p4d_clear(p4d)				\
+({							\
+	p4d_t *p4dp_ = (p4d);				\
+	PagePinned(virt_to_page(p4dp_))			\
+	? xen_l4_entry_update(p4dp_, xen_make_p4d(0))	\
+	: (void)(*p4dp_ = xen_make_p4d(0));		\
+})
+#else
+#define xen_p4d_clear(p4d)				\
+({							\
+	p4d_t *p4dp_ = (p4d);				\
+	p4d_t p4de_ = (p4d_t){ .pgd = xen_make_pgd(0) }; \
+	PagePinned(virt_to_page(p4dp_))			\
+	? xen_l4_entry_update(p4dp_, p4de_)		\
+	: (void)(*__user_p4d(p4dp_) = *p4dp_ = p4de_);	\
+})
+#endif
+
 #define __user_pgd(pgd) \
-	(((unsigned long)(pgd) & PAGE_MASK) != (unsigned long)init_level4_pgt \
-	 ? (pgd_t *)(virt_to_page(pgd)->private \
-		     + ((unsigned long)(pgd) & ~PAGE_MASK)) \
+	(((unsigned long)(pgd) & PAGE_MASK) != (unsigned long)init_top_pgt \
+	 ? (typeof(pgd))(page_private(virt_to_page(pgd)) \
+			 + ((unsigned long)(pgd) & ~PAGE_MASK)) \
 	 : (typeof(pgd))NULL)
 
 static inline void xen_set_pgd(pgd_t *pgdp, pgd_t pgd)
 {
-	xen_l4_entry_update(pgdp, pgd);
+	xen_l5_entry_update(pgdp, pgd);
 }
 
-#define xen_pgd_clear(pgd)			\
-({						\
-	pgd_t *__pgdp = (pgd);			\
-	PagePinned(virt_to_page(__pgdp))	\
-	? xen_l4_entry_update(__pgdp, xen_make_pgd(0)) \
-	: (void)(*__user_pgd(__pgdp) = *__pgdp = xen_make_pgd(0)); \
+#define xen_pgd_clear(pgd)					\
+({								\
+	pgd_t *pgdp_ = (pgd);					\
+	PagePinned(virt_to_page(pgdp_))				\
+	? xen_l5_entry_update(pgdp_, xen_make_pgd(0))		\
+	: (void)(*__user_pgd(pgdp_) = *pgdp_ = xen_make_pgd(0)); \
 })
 
 #define __pte_mfn(_pte) (((_pte).pte & PTE_PFN_MASK) >> PAGE_SHIFT)
@@ -221,6 +259,20 @@ extern int kern_addr_valid(unsigned long addr);
 extern void init_extra_mapping_uc(unsigned long phys, unsigned long size);
 extern void init_extra_mapping_wb(unsigned long phys, unsigned long size);
 
-#endif /* !__ASSEMBLY__ */
+#define gup_fast_permitted gup_fast_permitted
+static inline bool gup_fast_permitted(unsigned long start, int nr_pages,
+		int write)
+{
+	unsigned long len, end;
 
+	len = (unsigned long)nr_pages << PAGE_SHIFT;
+	end = start + len;
+	if (end < start)
+		return false;
+	if (end >> __VIRTUAL_MASK_SHIFT)
+		return false;
+	return true;
+}
+
+#endif /* !__ASSEMBLY__ */
 #endif /* _ASM_X86_PGTABLE_64_H */

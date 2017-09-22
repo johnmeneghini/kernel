@@ -18,7 +18,7 @@
 #include <linux/slab.h>
 #include <linux/mutex.h>
 #include <linux/rculist.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/pci_x86.h>
 #include <asm/acpi.h>
 
@@ -427,7 +427,7 @@ static acpi_status find_mboard_resource(acpi_handle handle, u32 lvl,
 	return AE_OK;
 }
 
-static int is_acpi_reserved(u64 start, u64 end, unsigned not_used)
+static bool is_acpi_reserved(u64 start, u64 end, unsigned not_used)
 {
 	struct resource mcfg_res;
 
@@ -444,8 +444,8 @@ static int is_acpi_reserved(u64 start, u64 end, unsigned not_used)
 	return mcfg_res.flags;
 }
 
-static int xen_report_mmconf_reserved(const struct pci_mmcfg_region *cfg,
-				      int valid, int with_e820)
+static bool xen_report_mmconf_reserved(const struct pci_mmcfg_region *cfg,
+				       bool valid, int with_e820)
 {
 #ifdef CONFIG_XEN
 	if (!with_e820)	{
@@ -474,11 +474,11 @@ static int xen_report_mmconf_reserved(const struct pci_mmcfg_region *cfg,
 	return valid;
 }
 
-typedef int (*check_reserved_t)(u64 start, u64 end, unsigned type);
+typedef bool (*check_reserved_t)(u64 start, u64 end, unsigned type);
 
-static int __ref is_mmconf_reserved(check_reserved_t is_reserved,
-				    struct pci_mmcfg_region *cfg,
-				    struct device *dev, int with_e820)
+static bool __ref is_mmconf_reserved(check_reserved_t is_reserved,
+				     struct pci_mmcfg_region *cfg,
+				     struct device *dev, int with_e820)
 {
 	u64 addr = cfg->res.start;
 	u64 size = resource_size(&cfg->res);
@@ -486,14 +486,14 @@ static int __ref is_mmconf_reserved(check_reserved_t is_reserved,
 	int num_buses;
 	char *method = with_e820 ? "E820" : "ACPI motherboard resources";
 
-	while (!is_reserved(addr, addr + size, E820_RESERVED)) {
+	while (!is_reserved(addr, addr + size, E820_TYPE_RESERVED)) {
 		size >>= 1;
 		if (size < (16UL<<20))
 			break;
 	}
 
 	if (size < (16UL<<20) && size != old_size)
-		return xen_report_mmconf_reserved(cfg, 0, with_e820);
+		return xen_report_mmconf_reserved(cfg, false, with_e820);
 
 	if (dev)
 		dev_info(dev, "MMCONFIG at %pR reserved in %s\n",
@@ -525,11 +525,11 @@ static int __ref is_mmconf_reserved(check_reserved_t is_reserved,
 				&cfg->res, (unsigned long) cfg->address);
 	}
 
-	return xen_report_mmconf_reserved(cfg, 1, with_e820);
+	return xen_report_mmconf_reserved(cfg, true, with_e820);
 }
 
-static int __ref pci_mmcfg_check_reserved(struct device *dev,
-		  struct pci_mmcfg_region *cfg, int early)
+static bool __ref
+pci_mmcfg_check_reserved(struct device *dev, struct pci_mmcfg_region *cfg, int early)
 {
 	if (!early && !acpi_disabled) {
 		if (is_mmconf_reserved(is_acpi_reserved, cfg, dev, 0))
@@ -548,7 +548,7 @@ static int __ref pci_mmcfg_check_reserved(struct device *dev,
 	}
 
 	/*
-	 * e820_all_mapped() is marked as __init.
+	 * e820__mapped_all() is marked as __init.
 	 * All entries from ACPI MCFG table have been checked at boot time.
 	 * For MCFG information constructed from hotpluggable host bridge's
 	 * _CBA method, just assume it's reserved.
@@ -559,7 +559,7 @@ static int __ref pci_mmcfg_check_reserved(struct device *dev,
 	/* Don't try to do this check unless configuration
 	   type 1 is available. how about type 2 ?*/
 	if (raw_pci_ops)
-		return is_mmconf_reserved(e820_all_mapped, cfg, dev, 1);
+		return is_mmconf_reserved(e820__mapped_all, cfg, dev, 1);
 
 	return 0;
 }

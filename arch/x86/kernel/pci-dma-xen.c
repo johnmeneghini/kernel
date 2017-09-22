@@ -308,19 +308,14 @@ int range_straddles_page_boundary(paddr_t p, size_t size)
 		!check_pages_physically_contiguous(pfn, offset, size));
 }
 
-int dma_supported(struct device *dev, u64 mask)
+int x86_dma_supported(struct device *dev, u64 mask)
 {
-	const struct dma_map_ops *ops = get_dma_ops(dev);
-
 #ifdef CONFIG_PCI
 	if (mask > 0xffffffff && forbid_dac > 0) {
 		dev_info(dev, "PCI: Disallowing DAC for device\n");
 		return 0;
 	}
 #endif
-
-	if (ops->dma_supported)
-		return ops->dma_supported(dev, mask);
 
 	/* Copied from i386. Doesn't make much sense, because it will
 	   only work for pci_alloc_coherent.
@@ -347,7 +342,6 @@ int dma_supported(struct device *dev, u64 mask)
 
 	return 1;
 }
-EXPORT_SYMBOL(dma_supported);
 
 static int __init pci_iommu_init(void)
 {

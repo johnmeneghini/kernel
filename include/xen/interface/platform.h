@@ -241,6 +241,7 @@ DEFINE_XEN_GUEST_HANDLE(xenpf_efi_runtime_call_t);
 #define  XEN_FW_EFI_MEM_INFO       3
 #define  XEN_FW_EFI_RT_VERSION     4
 #define  XEN_FW_EFI_PCI_ROM        5
+#define  XEN_FW_EFI_APPLE_PROPERTIES 6
 #define XEN_FW_KBD_SHIFT_FLAGS    5 /* Int16, Fn02: Get keyboard shift flags. */
 
 struct xenpf_firmware_info {
@@ -302,6 +303,11 @@ struct xenpf_firmware_info {
 				uint64_t address;
 				xen_ulong_t size;
 			} pci_rom;
+			struct {
+				/* OUT variables */
+				uint64_t address;
+				xen_ulong_t size;
+			} apple_properties;
 		} efi_info; /* XEN_FW_EFI_INFO */
 
 		/* Int16, Fn02: Get keyboard shift flags. */
@@ -621,16 +627,6 @@ DEFINE_GUEST_HANDLE_STRUCT(xenpf_symdata);
 typedef struct xenpf_symdata xenpf_symdata_t;
 DEFINE_XEN_GUEST_HANDLE(xenpf_symdata_t);
 
-#define XENPF_get_cpu_freq        ('N' << 24)
-#define XENPF_get_cpu_freq_min    (XENPF_get_cpu_freq + 1)
-#define XENPF_get_cpu_freq_max    (XENPF_get_cpu_freq_min + 1)
-struct xenpf_get_cpu_freq {
-    /* IN variables */
-    uint32_t vcpu;
-    /* OUT variables */
-    uint32_t freq; /* in kHz */
-};
-
 /*
  * ` enum neg_errnoval
  * ` HYPERVISOR_platform_op(const struct xen_platform_op*);
@@ -661,7 +657,6 @@ struct xen_platform_op {
 		struct xenpf_core_parking      core_parking;
 		struct xenpf_resource_op       resource_op;
 		struct xenpf_symdata           symdata;
-		struct xenpf_get_cpu_freq      get_cpu_freq;
 		uint8_t                        pad[128];
 	} u;
 };

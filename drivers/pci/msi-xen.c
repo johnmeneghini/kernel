@@ -557,7 +557,8 @@ static int msi_capability_init(struct pci_dev *dev, int nvec,
 	if (affd) {
 		masks = irq_create_affinity_masks(nvec, affd);
 		if (!masks)
-			pr_err("Unable to allocate affinity masks, ignoring\n");
+			dev_err(&dev->dev, "can't allocate MSI affinity masks for %d vectors\n",
+				nvec);
 	}
 
 	pci_msi_set_enable(dev, 0);	/* Disable MSI during set up */
@@ -612,7 +613,8 @@ static int msix_capability_init(struct pci_dev *dev, struct msix_entry *entries,
 	if (affd) {
 		masks = irq_create_affinity_masks(nvec, affd);
 		if (!masks)
-			pr_err("Unable to allocate affinity masks, ignoring\n");
+			dev_err(&dev->dev, "can't allocate MSI-X affinity masks for %d vectors\n",
+				nvec);
 	}
 
 	/*
@@ -751,7 +753,7 @@ int pci_msi_vec_count(struct pci_dev *dev)
 }
 EXPORT_SYMBOL(pci_msi_vec_count);
 
-void pci_msi_shutdown(struct pci_dev *dev)
+static void pci_msi_shutdown(struct pci_dev *dev)
 {
 	int pirq;
 	struct msi_dev_list *msi_dev_entry = get_msi_dev_pirq_list(dev);
@@ -918,33 +920,17 @@ static int __pci_enable_msix(struct pci_dev *dev, struct msix_entry *entries,
 	return status;
 }
 
-/**
- * pci_enable_msix - configure device's MSI-X capability structure
- * @dev: pointer to the pci_dev data structure of MSI-X device function
- * @entries: pointer to an array of MSI-X entries (optional)
- * @nvec: number of MSI-X irqs requested for allocation by device driver
- *
- * Setup the MSI-X capability structure of device function with the number
- * of requested irqs upon its software driver call to request for
- * MSI-X mode enabled on its hardware device function. A return of zero
- * indicates the successful configuration of MSI-X capability structure
- * with new allocated MSI-X irqs. A return of < 0 indicates a failure.
- * Or a return of > 0 indicates that driver request is exceeding the number
- * of irqs or MSI-X vectors available. Driver should use the returned value to
- * re-send its request.
- **/
-int pci_enable_msix(struct pci_dev *dev, struct msix_entry *entries, int nvec)
-{
-	return __pci_enable_msix(dev, entries, nvec, NULL);
-}
-EXPORT_SYMBOL(pci_enable_msix);
-
-void pci_msix_shutdown(struct pci_dev *dev)
+static void pci_msix_shutdown(struct pci_dev *dev)
 {
 	struct msi_dev_list *msi_dev_entry;
 
 	if (!pci_msi_enable || !dev || !dev->msix_enabled)
 		return;
+
+	if (pci_dev_is_disconnected(dev)) {
+		dev->msix_enabled = 0;
+		return;
+	}
 
 	if (!is_initial_xendomain())
 #ifdef CONFIG_XEN_PCIDEV_FRONTEND
@@ -1042,7 +1028,7 @@ static int __pci_enable_msi_range(struct pci_dev *dev, int minvec, int maxvec,
 
 	for (;;) {
 		if (affd) {
-			nvec = irq_calc_affinity_vectors(nvec, affd);
+			nvec = irq_calc_affinity_vectors(minvec, nvec, affd);
 			if (nvec < minvec)
 				return -ENOSPC;
 		}
@@ -1101,7 +1087,7 @@ static int __pci_enable_msix_range(struct pci_dev *dev,
 
 	for (;;) {
 		if (affd) {
-			nvec = irq_calc_affinity_vectors(nvec, affd);
+			nvec = irq_calc_affinity_vectors(minvec, nvec, affd);
 			if (nvec < minvec)
 				return -ENOSPC;
 		}
@@ -1169,16 +1155,6 @@ int pci_alloc_irq_vectors_affinity(struct pci_dev *dev, unsigned int min_vecs,
 	if (flags & PCI_IRQ_AFFINITY) {
 		if (!affd)
 			affd = &msi_default_affd;
-
-		if (affd->pre_vectors + affd->post_vectors > min_vecs)
-			return -EINVAL;
-
-		/*
-		 * If there aren't any vectors left after applying the pre/post
-		 * vectors don't bother with assigning affinity.
-		 */
-		if (affd->pre_vectors + affd->post_vectors == min_vecs)
-			affd = NULL;
 	} else {
 		if (WARN_ON(affd))
 			affd = NULL;

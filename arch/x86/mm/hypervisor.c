@@ -519,7 +519,35 @@ void xen_l3_entry_update(pud_t *ptr, pud_t val)
 #endif
 
 #ifdef CONFIG_X86_64
-void xen_l4_entry_update(pgd_t *ptr, pgd_t val)
+void xen_l4_entry_update(p4d_t *ptr, p4d_t val)
+{
+	mmu_update_t u[2];
+	struct page *page = NULL;
+
+	if (likely(p4d_present(val)) && likely(mem_map)
+	    && likely(PagePinned(virt_to_page(ptr)))) {
+		page = p4d_page(val);
+		if (unlikely(PagePinned(page)))
+			page = NULL;
+	}
+	u[0].ptr = virt_to_machine(ptr);
+	u[0].val = __p4d_val(val);
+#ifndef CONFIG_X86_5LEVEL
+	if (((unsigned long)ptr & ~PAGE_MASK)
+	    <= pgd_index(TASK_SIZE_MAX) * sizeof(*ptr)) {
+		ptr = __user_p4d(ptr);
+		BUG_ON(!ptr);
+		u[1].ptr = virt_to_machine(ptr);
+		u[1].val = __p4d_val(val);
+		do_lN_entry_update(u, 2, page);
+	} else
+#endif
+		do_lN_entry_update(u, 1, page);
+}
+#endif /* CONFIG_X86_64 */
+
+#ifdef CONFIG_X86_5LEVEL
+void xen_l5_entry_update(pgd_t *ptr, pgd_t val)
 {
 	mmu_update_t u[2];
 	struct page *page = NULL;
@@ -542,7 +570,7 @@ void xen_l4_entry_update(pgd_t *ptr, pgd_t val)
 	} else
 		do_lN_entry_update(u, 1, page);
 }
-#endif /* CONFIG_X86_64 */
+#endif /* CONFIG_X86_5LEVEL */
 
 #ifdef CONFIG_X86_64
 void xen_pt_switch(pgd_t *pgd)
@@ -639,18 +667,28 @@ void xen_pgd_pin(pgd_t *pgd)
 	op[0].cmd = MMUEXT_PIN_L3_TABLE;
 	op[0].arg1.mfn = virt_to_mfn(pgd);
 #ifdef CONFIG_X86_64
+# ifdef CONFIG_X86_5LEVEL
+	op[1].cmd = op[0].cmd = MMUEXT_PIN_L5_TABLE;
+# else
 	op[1].cmd = op[0].cmd = MMUEXT_PIN_L4_TABLE;
+# endif
 	pgd = __user_pgd(pgd);
 	if (pgd)
 		op[1].arg1.mfn = virt_to_mfn(pgd);
 	else {
-#ifdef CONFIG_X86_VSYSCALL_EMULATION
+# ifdef CONFIG_X86_VSYSCALL_EMULATION
+#  ifdef CONFIG_X86_5LEVEL
+		op[1].cmd = MMUEXT_PIN_L4_TABLE;
+		op[1].arg1.mfn = pfn_to_mfn(__pa_symbol(level4_user_pgt)
+					    >> PAGE_SHIFT);
+#  else
 		op[1].cmd = MMUEXT_PIN_L3_TABLE;
 		op[1].arg1.mfn = pfn_to_mfn(__pa_symbol(level3_user_pgt)
 					    >> PAGE_SHIFT);
-#else
+#  endif
+# else
 		nr = 1;
-#endif
+# endif
 	}
 #endif
 	if (HYPERVISOR_mmuext_op(op, nr, NULL, DOMID_SELF) < 0)

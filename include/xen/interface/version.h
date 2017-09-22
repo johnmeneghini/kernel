@@ -96,6 +96,11 @@ typedef struct xen_feature_info xen_feature_info_t;
 
 #define XENVER_commandline 9
 typedef char xen_commandline_t[1024];
+#if defined(CONFIG_PARAVIRT_XEN) && !defined(HAVE_XEN_PLATFORM_COMPAT_H)
+struct xen_commandline {
+	char buf[1024];
+};
+#endif
 
 /*
  * Return value is the number of bytes written, or XEN_Exx on error.

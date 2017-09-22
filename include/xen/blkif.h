@@ -38,9 +38,6 @@
 struct blkif_common_request {
 	char dummy;
 };
-struct blkif_common_response {
-	char dummy;
-};
 
 union __attribute__((transparent_union)) blkif_union {
 	struct blkif_request *generic;
@@ -81,11 +78,6 @@ union blkif_x86_32_union {
 	struct blkif_x86_32_discard discard;
 	struct blkif_x86_32_indirect indirect;
 };
-struct blkif_x86_32_response {
-	uint64_t        id;              /* copied from request */
-	uint8_t         operation;       /* copied from request */
-	int16_t         status;          /* BLKIF_RSP_???       */
-};
 #pragma pack(pop)
 
 /* x86_64 protocol version */
@@ -119,16 +111,14 @@ union blkif_x86_64_union {
 	struct blkif_x86_64_discard discard;
 	struct blkif_x86_64_indirect indirect;
 };
-struct blkif_x86_64_response {
-	uint64_t       __attribute__((__aligned__(8))) id;
-	uint8_t         operation;       /* copied from request */
-	int16_t         status;          /* BLKIF_RSP_???       */
-};
 
 #define blkif_native_sring blkif_sring
-DEFINE_RING_TYPES(blkif_common, struct blkif_common_request, struct blkif_common_response);
-DEFINE_RING_TYPES(blkif_x86_32, union blkif_x86_32_union, struct blkif_x86_32_response);
-DEFINE_RING_TYPES(blkif_x86_64, union blkif_x86_64_union, struct blkif_x86_64_response);
+DEFINE_RING_TYPES(blkif_common, struct blkif_common_request,
+		  struct blkif_response);
+DEFINE_RING_TYPES(blkif_x86_32, union blkif_x86_32_union,
+		  struct blkif_response __packed);
+DEFINE_RING_TYPES(blkif_x86_64, union blkif_x86_64_union,
+		  struct blkif_response);
 
 union blkif_back_rings {
 	blkif_back_ring_t        native;

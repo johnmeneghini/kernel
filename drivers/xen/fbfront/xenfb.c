@@ -824,7 +824,6 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateInitWait:
-	InitWait:
 		xenbus_switch_state(dev, XenbusStateConnected);
 		break;
 
@@ -835,8 +834,8 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 		 * get Connected twice here.
 		 */
 		if (dev->state != XenbusStateConnected)
-			goto InitWait; /* no InitWait seen yet, fudge it */
-
+			/* no InitWait seen yet, fudge it */
+			xenbus_switch_state(dev, XenbusStateConnected);
 		info->feature_resize = !!xenbus_read_unsigned(dev->otherend,
 							      "feature-resize",
 							      0);

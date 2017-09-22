@@ -45,7 +45,7 @@ struct module_kobject {
 	struct kobject *drivers_dir;
 	struct module_param_attrs *mp;
 	struct completion *kobj_completion;
-};
+} __randomize_layout;
 
 struct module_attribute {
 	struct attribute attr;
@@ -257,7 +257,6 @@ extern const typeof(name) __mod_##type##__##name##_device_table		\
  * files require multiple MODULE_FIRMWARE() specifiers */
 #define MODULE_FIRMWARE(_firmware) MODULE_INFO(firmware, _firmware)
 
-struct dwarf_table;
 struct notifier_block;
 
 #ifdef CONFIG_MODULES
@@ -394,9 +393,6 @@ struct module {
 	struct module_layout core_layout __module_layout_align;
 	struct module_layout init_layout;
 
-	/* The handle returned from dwarf_add_table. */
-	struct dwarf_table *dwarf_info;
-
 	/* Arch-specific module values */
 	struct mod_arch_specific arch;
 
@@ -446,8 +442,8 @@ struct module {
 #ifdef CONFIG_EVENT_TRACING
 	struct trace_event_call **trace_events;
 	unsigned int num_trace_events;
-	struct trace_enum_map **trace_enums;
-	unsigned int num_trace_enums;
+	struct trace_eval_map **trace_evals;
+	unsigned int num_trace_evals;
 #endif
 #ifdef CONFIG_FTRACE_MCOUNT_RECORD
 	unsigned int num_ftrace_callsites;
@@ -479,7 +475,7 @@ struct module {
 	ctor_fn_t *ctors;
 	unsigned int num_ctors;
 #endif
-} ____cacheline_aligned;
+} ____cacheline_aligned __randomize_layout;
 #ifndef MODULE_ARCH_INIT
 #define MODULE_ARCH_INIT {}
 #endif
@@ -497,6 +493,7 @@ static inline int module_is_live(struct module *mod)
 struct module *__module_text_address(unsigned long addr);
 struct module *__module_address(unsigned long addr);
 bool is_module_address(unsigned long addr);
+bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr);
 bool is_module_percpu_address(unsigned long addr);
 bool is_module_text_address(unsigned long addr);
 #ifdef CONFIG_SUSE_KERNEL_SUPPORTED
@@ -589,7 +586,7 @@ extern bool try_module_get(struct module *module);
 extern void module_put(struct module *module);
 
 #else /*!CONFIG_MODULE_UNLOAD*/
-static inline int try_module_get(struct module *module)
+static inline bool try_module_get(struct module *module)
 {
 	return !module || module_is_live(module);
 }
@@ -667,6 +664,11 @@ static inline bool is_module_percpu_address(unsigned long addr)
 	return false;
 }
 
+static inline bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
+{
+	return false;
+}
+
 static inline bool is_module_text_address(unsigned long addr)
 {
 	return false;
@@ -681,9 +683,9 @@ static inline void __module_get(struct module *module)
 {
 }
 
-static inline int try_module_get(struct module *module)
+static inline bool try_module_get(struct module *module)
 {
-	return 1;
+	return true;
 }
 
 static inline void module_put(struct module *module)

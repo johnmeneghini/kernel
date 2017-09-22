@@ -164,6 +164,7 @@ NMI_MASK = 0x80000000
  */
 
 ENTRY(entry_SYSCALL_64)
+	UNWIND_HINT_EMPTY
 	/*
 	 * Interrupts are enabled on entry.
 	 */
@@ -181,6 +182,7 @@ ENTRY(entry_SYSCALL_64)
 	pushq	%r10				/* pt_regs->r10 */
 	pushq	%r11				/* pt_regs->r11 */
 	sub	$(6*8), %rsp			/* pt_regs->bp, bx, r12-15 not saved */
+	UNWIND_HINT_REGS extra=0
 
 	/*
 	 * If we need to do entry work or if we guess we'll need to do
@@ -231,6 +233,7 @@ entry_SYSCALL_64_fastpath:
 	TRACE_IRQS_ON		/* user mode is traced as IRQs on */
 	RESTORE_C_REGS_EXCEPT_RCX_R11
 	REMOVE_PT_GPREGS_FROM_STACK 8
+	UNWIND_HINT_EMPTY
 	xor	%ecx, %ecx
 	xor	%r11, %r11
 	HYPERVISOR_IRET VGCF_IN_SYSCALL
@@ -275,6 +278,7 @@ ENTRY(stub_ptregs_64)
 	 * Called from fast path -- pop return address and jump to slow path
 	 */
 	popq	%rax
+	UNWIND_HINT_REGS extra=0
 	jmp	entry_SYSCALL64_slow_path
 
 1:
@@ -283,6 +287,7 @@ END(stub_ptregs_64)
 
 .macro ptregs_stub func
 ENTRY(ptregs_\func)
+	UNWIND_HINT_FUNC
 	leaq	\func(%rip), %rax
 	jmp	stub_ptregs_64
 END(ptregs_\func)
@@ -299,6 +304,7 @@ END(ptregs_\func)
  * %rsi: next task
  */
 ENTRY(__switch_to_asm)
+	UNWIND_HINT_FUNC
 	/*
 	 * Save callee-saved registers
 	 * This must match the order in inactive_task_frame
@@ -338,17 +344,17 @@ END(__switch_to_asm)
  * r12: kernel thread arg
  */
 ENTRY(ret_from_fork)
-	FRAME_BEGIN			/* help unwinder find end of stack */
+	UNWIND_HINT_EMPTY
 	movq	%rax, %rdi
-	call	schedule_tail		/* rdi: 'prev' task parameter */
+	call	schedule_tail			/* rdi: 'prev' task parameter */
 
-	testq	%rbx, %rbx		/* from kernel_thread? */
-	jnz	1f			/* kernel threads are uncommon */
+	testq	%rbx, %rbx			/* from kernel_thread? */
+	jnz	1f				/* kernel threads are uncommon */
 
 2:
-	leaq	FRAME_OFFSET(%rsp),%rdi	/* pt_regs pointer */
+	UNWIND_HINT_REGS
+	movq	%rsp, %rdi
 	call	syscall_return_slowpath	/* returns with IRQs disabled */
-	FRAME_END
 	jmp	restore_regs_and_iret
 
 1:
@@ -365,6 +371,94 @@ ENTRY(ret_from_fork)
 	movq	$0, RAX(%rsp)
 	jmp	2b
 END(ret_from_fork)
+
+.macro DEBUG_ENTRY_ASSERT_IRQS_OFF
+#ifdef CONFIG_DEBUG_ENTRY
+	pushfq
+	testl $X86_EFLAGS_IF, (%rsp)
+	jz .Lokay_\@
+	ud2
+.Lokay_\@:
+	addq $8, %rsp
+#endif
+.endm
+
+/*
+ * Enters the IRQ stack if we're not already using it.  NMI-safe.  Clobbers
+ * flags and puts old RSP into old_rsp, and leaves all other GPRs alone.
+ * Requires kernel GSBASE.
+ *
+ * The invariant is that, if irq_count != -1, then the IRQ stack is in use.
+ */
+.macro ENTER_IRQ_STACK regs=1 old_rsp
+	DEBUG_ENTRY_ASSERT_IRQS_OFF
+	movq	%rsp, \old_rsp
+
+	.if \regs
+	UNWIND_HINT_REGS base=\old_rsp
+	.endif
+
+	incl	PER_CPU_VAR(irq_count)
+	jnz	.Lirq_stack_push_old_rsp_\@
+
+	/*
+	 * Right now, if we just incremented irq_count to zero, we've
+	 * claimed the IRQ stack but we haven't switched to it yet.
+	 *
+	 * If anything is added that can interrupt us here without using IST,
+	 * it must be *extremely* careful to limit its stack usage.  This
+	 * could include kprobes and a hypothetical future IST-less #DB
+	 * handler.
+	 *
+	 * The OOPS unwinder relies on the word at the top of the IRQ
+	 * stack linking back to the previous RSP for the entire time we're
+	 * on the IRQ stack.  For this to work reliably, we need to write
+	 * it before we actually move ourselves to the IRQ stack.
+	 */
+
+	movq	\old_rsp, PER_CPU_VAR(irq_stack_union + IRQ_STACK_SIZE - 8)
+	movq	PER_CPU_VAR(irq_stack_ptr), %rsp
+
+#ifdef CONFIG_DEBUG_ENTRY
+	/*
+	 * If the first movq above becomes wrong due to IRQ stack layout
+	 * changes, the only way we'll notice is if we try to unwind right
+	 * here.  Assert that we set up the stack right to catch this type
+	 * of bug quickly.
+	 */
+	cmpq	-8(%rsp), \old_rsp
+	je	.Lirq_stack_okay\@
+	ud2
+	.Lirq_stack_okay\@:
+#endif
+
+.Lirq_stack_push_old_rsp_\@:
+	pushq	\old_rsp
+
+	.if \regs
+	UNWIND_HINT_REGS indirect=1
+	.endif
+.endm
+
+/*
+ * Undoes ENTER_IRQ_STACK.
+ */
+.macro LEAVE_IRQ_STACK regs=1
+	DEBUG_ENTRY_ASSERT_IRQS_OFF
+	/* We need to be off the IRQ stack before decrementing irq_count. */
+	popq	%rsp
+
+	.if \regs
+	UNWIND_HINT_REGS
+	.endif
+
+	/*
+	 * As in ENTER_IRQ_STACK, irq_count == 0, we are still claiming
+	 * the irq stack but we're not on it.
+	 */
+
+	decl	PER_CPU_VAR(irq_count)
+.endm
 
 /*
  * Interrupt exit.
@@ -419,6 +513,8 @@ END(retint_kernel)
 
 .macro idtentry sym do_sym has_error_code:req paranoid=0 shift_ist=-1
 ENTRY(\sym)
+	UNWIND_HINT_IRET_REGS offset=8
+
 	/* Sanity check */
 	.if \shift_ist != -1 && \paranoid == 0
 	.error "using shift_ist requires paranoid=1"
@@ -444,6 +540,7 @@ ENTRY(\sym)
 	.else
 	call	error_entry
 	.endif
+	UNWIND_HINT_REGS
 	/* returned flag: ebx=0: need swapgs on exit, ebx=1: don't need it */
 
 	.if \paranoid
@@ -538,14 +635,14 @@ idtentry \sym \do_sym has_error_code=\has_error_code
 ENTRY(do_hypervisor_callback)   # do_hypervisor_callback(struct *pt_regs)
 # Since we don't modify %rdi, evtchn_do_upall(struct *pt_regs) will
 # see the correct pointer to the pt_regs
+	UNWIND_HINT_FUNC
 	movq	%rdi, %rsp		# we don't return, adjust the stack frame
-11:	incl	PER_CPU_VAR(irq_count)
-	movq	%rsp, %rbp
-	cmovzq	PER_CPU_VAR(irq_stack_ptr), %rsp
-	pushq	%rbp			# backlink for old unwinder
+	UNWIND_HINT_REGS
+11:
+	ENTER_IRQ_STACK old_rsp=%r10
 	call	evtchn_do_upcall
-	popq 	%rsp
-	decl	PER_CPU_VAR(irq_count)
+	LEAVE_IRQ_STACK
+
 #ifndef CONFIG_PREEMPT
 	test	%al, %al
 	jz	error_exit
@@ -557,6 +654,7 @@ ENTRY(do_hypervisor_callback)   # do_hypervisor_callback(struct *pt_regs)
 	call	preempt_schedule_irq
 	movb	$1, PER_CPU_VAR(privcmd_hcall)
 #endif
+
 	jmp	error_exit
 END(do_hypervisor_callback)
 
@@ -640,32 +738,12 @@ idtentry simd_coprocessor_error		do_simd_coprocessor_error	has_error_code=0
 ENTRY(do_softirq_own_stack)
 	pushq	%rbp
 	mov	%rsp, %rbp
-	incl	PER_CPU_VAR(irq_count)
-	cmove	PER_CPU_VAR(irq_stack_ptr), %rsp
-	push	%rbp				/* frame pointer backlink */
+	ENTER_IRQ_STACK regs=0 old_rsp=%r11
 	call	__do_softirq
+	LEAVE_IRQ_STACK regs=0
 	leaveq
-	decl	PER_CPU_VAR(irq_count)
 	ret
-END(do_softirq_own_stack)
-
-#ifdef CONFIG_DWARF_UNWIND
-SYM_FUNC_START(arch_dwarf_init_running)
-	movq	%r15, R15(%rdi)
-	movq	%r14, R14(%rdi)
-	movq	%r13, R13(%rdi)
-	movq	%r12, R12(%rdi)
-	movq	%rbp, RBP(%rdi)
-	movq	%rbx, RBX(%rdi)
-	movq	(%rsp), %r9
-	movq	%r9, RIP(%rdi)
-	leaq	8(%rsp), %r9
-	movq	%r9, RSP(%rdi)
-	movq	$__KERNEL_CS, CS(%rdi)
-	movq	$__KERNEL_DS, SS(%rdi)
-	ret
-SYM_FUNC_END(arch_dwarf_init_running)
-#endif
+ENDPROC(do_softirq_own_stack)
 
 idtentry debug			do_debug		has_error_code=0
 idtentry nmi			do_nmi_callback		has_error_code=0
@@ -690,6 +768,7 @@ idtentry machine_check					has_error_code=0	do_sym=*machine_check_vector(%rip)
  * Return: ebx=0: need swapgs on exit, ebx=1: otherwise
  */
 ENTRY(paranoid_entry)
+	UNWIND_HINT_FUNC
 	cld
 	SAVE_C_REGS 8
 	SAVE_EXTRA_REGS 8
@@ -717,7 +796,8 @@ END(paranoid_entry)
  * On entry, ebx is "no swapgs" flag (1: don't need swapgs, 0: need it)
  */
 ENTRY(paranoid_exit)
-	DISABLE_INTERRUPTS(CLBR_NONE)
+	UNWIND_HINT_REGS
+	DISABLE_INTERRUPTS(CLBR_ANY)
 	TRACE_IRQS_OFF_DEBUG
 	testl	%ebx, %ebx			/* swapgs needed? */
 	jnz	paranoid_exit_no_swapgs
@@ -739,6 +819,7 @@ END(paranoid_exit)
  * Return: EBX=0: came from user mode; EBX=1: otherwise
  */
 ENTRY(error_entry)
+	UNWIND_HINT_FUNC
 	cld
 	SAVE_C_REGS 8
 	SAVE_EXTRA_REGS 8
@@ -822,6 +903,7 @@ END(error_entry)
 
 
 ENTRY(error_exit)
+	UNWIND_HINT_REGS
 	DISABLE_INTERRUPTS(CLBR_ANY)
 	TRACE_IRQS_OFF
 	testb	$3, CS(%rsp)
@@ -857,18 +939,20 @@ END(do_nmi_callback)
 ENTRY(ignore_sysret)
 	popq	%rcx
 	popq	%r11
+	UNWIND_HINT_EMPTY
 	mov	$-ENOSYS, %eax
 	HYPERVISOR_IRET VGCF_i387_valid
 END(ignore_sysret)
 #endif
 
 ENTRY(rewind_stack_do_exit)
+	UNWIND_HINT_FUNC
 	/* Prevent any naive code from trying to unwind to our caller. */
 	xorl	%ebp, %ebp
 
 	movq	PER_CPU_VAR(cpu_current_top_of_stack), %rax
-	leaq	-TOP_OF_KERNEL_STACK_PADDING-PTREGS_SIZE(%rax), %rsp
+	leaq	-PTREGS_SIZE(%rax), %rsp
+	UNWIND_HINT_FUNC sp_offset=PTREGS_SIZE
 
 	call	do_exit
-1:	jmp 1b
 END(rewind_stack_do_exit)

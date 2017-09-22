@@ -3,6 +3,7 @@
 #include <linux/cdrom.h>
 #include <linux/hdreg.h>
 #include <scsi/scsi.h>
+#include <scsi/scsi_request.h>
 #include <asm/tlbflush.h>
 
 #include <scsi/scsi.h>
@@ -175,6 +176,16 @@ flush_tlb_kernel_page(unsigned long kvaddr)
 	xen_invlpg_all(kvaddr);
 #else
 	flush_tlb_kernel_range(kvaddr, kvaddr + PAGE_SIZE);
+#endif
+}
+
+static inline void
+flush_tlb_user_page(struct vm_area_struct *vma, unsigned long uvaddr)
+{
+#ifdef CONFIG_X86
+	xen_invlpg_mask(mm_cpumask(vma->vm_mm), uvaddr);
+#else
+	flush_tlb_page(vma, uvaddr);
 #endif
 }
 
@@ -540,7 +551,7 @@ blktap_map(struct blktap *tap,
 		pte = mk_pte(page, ring->vma->vm_page_prot);
 		blktap_map_uaddr(ring->vma, uvaddr,
 				 pte_mkspecial(pte_mkwrite(pte)));
-		flush_tlb_page(ring->vma, uvaddr);
+		flush_tlb_user_page(ring->vma, uvaddr);
 		blktap_map_uaddr(NULL, kvaddr, mk_pte(page, PAGE_KERNEL));
 		flush_tlb_kernel_page(kvaddr);
 
@@ -822,16 +833,17 @@ blktap_device_run_queue(struct blktap *tap)
 	while ((req = blk_peek_request(rq)) != NULL) {
 		if (blk_rq_is_passthrough(req)) {
 			blk_start_request(req);
-			req->errors = (DID_ERROR << 16) |
-				      (DRIVER_INVALID << 24);
-			__blk_end_request_all(req, -EIO);
+			if (blk_rq_is_scsi(req))
+				scsi_req(req)->result = (DID_ERROR << 16) |
+				                        (DRIVER_INVALID << 24);
+			__blk_end_request_all(req, BLK_STS_IOERR);
 			continue;
 		}
 
 		if (req_op(req) == REQ_OP_FLUSH ||
 		    (req->cmd_flags & (REQ_PREFLUSH|REQ_FUA))) {
 			blk_start_request(req);
-			__blk_end_request_all(req, -EOPNOTSUPP);
+			__blk_end_request_all(req, BLK_STS_NOTSUPP);
 			continue;
 		}
 
@@ -918,10 +930,8 @@ fail:
 
 			BTERR("device closed: failing secs %#Lx-%#Lx\n",
 			      sec, sec + blk_rq_sectors(req) - 1);
-		} else
-			req->errors = (DID_ERROR << 16)
-				      | (DRIVER_INVALID << 24);
-		__blk_end_request_all(req, -EIO);
+		}
+		__blk_end_request_all(req, BLK_STS_IOERR);
 	}
 }
 

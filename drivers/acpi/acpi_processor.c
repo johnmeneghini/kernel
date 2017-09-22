@@ -327,7 +327,7 @@ static int acpi_processor_get_info(struct acpi_device *device)
 		if (ret && (ret != -ENODEV || invalid_phys_cpuid(pr->phys_id)))
 			return ret;
 	}
-#if defined(CONFIG_SMP) && defined(CONFIG_PROCESSOR_EXTERNAL_CONTROL)
+#ifdef CONFIG_PROCESSOR_EXTERNAL_CONTROL
 	if (pr->id >= setup_max_cpus && pr->id
 	    && !invalid_logical_cpuid(pr->id))
 		pr->id = -1;
@@ -419,10 +419,9 @@ static int acpi_processor_add(struct acpi_device *device,
 	    (invalid_logical_cpuid(pr->id) && !processor_cntl_external()))
 		return 0;
 
-#ifdef CONFIG_SMP
-	if (pr->id >= setup_max_cpus && pr->id != 0) {
-		if (!processor_cntl_external())
-			return 0;
+#ifdef CONFIG_PROCESSOR_EXTERNAL_CONTROL
+	if (pr->id >= setup_max_cpus && pr->id) {
+		WARN_ON(!processor_cntl_external());
 		WARN_ON(!invalid_logical_cpuid(pr->id));
 	}
 #endif

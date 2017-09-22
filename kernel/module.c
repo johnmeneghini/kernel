@@ -38,7 +38,6 @@
 #include <linux/capability.h>
 #include <linux/cpu.h>
 #include <linux/moduleparam.h>
-#include <linux/dwarf.h>
 #include <linux/errno.h>
 #include <linux/err.h>
 #include <linux/vermagic.h>
@@ -50,6 +49,7 @@
 #include <linux/rculist.h>
 #include <linux/uaccess.h>
 #include <asm/cacheflush.h>
+#include <linux/set_memory.h>
 #include <asm/mmu_context.h>
 #include <linux/license.h>
 #include <asm/sections.h>
@@ -316,6 +316,7 @@ int unregister_module_notifier(struct notifier_block *nb)
 EXPORT_SYMBOL(unregister_module_notifier);
 
 struct load_info {
+	const char *name;
 	Elf_Ehdr *hdr;
 	unsigned long len;
 	Elf_Shdr *sechdrs;
@@ -328,7 +329,7 @@ struct load_info {
 	unsigned long mod_kallsyms_init_off;
 #endif
 	struct {
-		unsigned int sym, str, mod, vers, info, pcpu, dwarf;
+		unsigned int sym, str, mod, vers, info, pcpu;
 	} index;
 };
 
@@ -616,7 +617,7 @@ static struct module *find_module_all(const char *name, size_t len,
 
 	module_assert_mutex_or_preempt();
 
-	list_for_each_entry(mod, &modules, list) {
+	list_for_each_entry_rcu(mod, &modules, list) {
 		if (!even_unformed && mod->state == MODULE_STATE_UNFORMED)
 			continue;
 		if (strlen(mod->name) == len && !memcmp(mod->name, name, len))
@@ -682,16 +683,7 @@ static void percpu_modcopy(struct module *mod,
 		memcpy(per_cpu_ptr(mod->percpu, cpu), from, size);
 }
 
-/**
- * is_module_percpu_address - test whether address is from module static percpu
- * @addr: address to test
- *
- * Test whether @addr belongs to module static percpu area.
- *
- * RETURNS:
- * %true if @addr is from module static percpu area
- */
-bool is_module_percpu_address(unsigned long addr)
+bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
 {
 	struct module *mod;
 	unsigned int cpu;
@@ -705,9 +697,15 @@ bool is_module_percpu_address(unsigned long addr)
 			continue;
 		for_each_possible_cpu(cpu) {
 			void *start = per_cpu_ptr(mod->percpu, cpu);
+			void *va = (void *)addr;
 
-			if ((void *)addr >= start &&
-			    (void *)addr < start + mod->percpu_size) {
+			if (va >= start && va < start + mod->percpu_size) {
+				if (can_addr) {
+					*can_addr = (unsigned long) (va - start);
+					*can_addr += (unsigned long)
+						per_cpu_ptr(mod->percpu,
+							    get_boot_cpu_id());
+				}
 				preempt_enable();
 				return true;
 			}
@@ -716,6 +714,20 @@ bool is_module_percpu_address(unsigned long addr)
 
 	preempt_enable();
 	return false;
+}
+
+/**
+ * is_module_percpu_address - test whether address is from module static percpu
+ * @addr: address to test
+ *
+ * Test whether @addr belongs to module static percpu area.
+ *
+ * RETURNS:
+ * %true if @addr is from module static percpu area
+ */
+bool is_module_percpu_address(unsigned long addr)
+{
+	return __is_module_percpu_address(addr, NULL);
 }
 
 #else /* ... !CONFIG_SMP */
@@ -749,28 +761,12 @@ bool is_module_percpu_address(unsigned long addr)
 	return false;
 }
 
+bool __is_module_percpu_address(unsigned long addr, unsigned long *can_addr)
+{
+	return false;
+}
+
 #endif /* CONFIG_SMP */
-
-static unsigned int find_dwarf(struct load_info *info)
-{
-	unsigned int section = 0;
-#ifdef ARCH_DWARF_SECTION_NAME
-	section = find_sec(info, ARCH_DWARF_SECTION_NAME);
-	if (section)
-		info->sechdrs[section].sh_flags |= SHF_ALLOC;
-#endif
-	return section;
-}
-
-static void add_dwarf_table(struct module *mod, struct load_info *info)
-{
-	int index = info->index.dwarf;
-
-	/* Size of section 0 is 0, so this is ok if there is no dwarf info. */
-	mod->dwarf_info = dwarf_add_table(mod,
-					  (void *)info->sechdrs[index].sh_addr,
-					  info->sechdrs[index].sh_size);
-}
 
 #define MODINFO_ATTR(field)	\
 static void setup_modinfo_##field(struct module *mod, const char *s)  \
@@ -984,6 +980,8 @@ SYSCALL_DEFINE2(delete_module, const char __user *, name_user,
 	if (strncpy_from_user(name, name_user, MODULE_NAME_LEN-1) < 0)
 		return -EFAULT;
 	name[MODULE_NAME_LEN-1] = '\0';
+
+	audit_log_kern_module(name);
 
 	if (mutex_lock_interruptible(&module_mutex) != 0)
 		return -EINTR;
@@ -1225,10 +1223,7 @@ static ssize_t store_uevent(struct module_attribute *mattr,
 			    struct module_kobject *mk,
 			    const char *buffer, size_t count)
 {
-	enum kobject_action action;
-
-	if (kobject_action_type(buffer, count, &action) == 0)
-		kobject_uevent(&mk->kobj, action);
+	kobject_synth_uevent(&mk->kobj, buffer, count);
 	return count;
 }
 
@@ -1331,12 +1326,13 @@ static u32 resolve_rel_crc(const s32 *crc)
 	return *(u32 *)((void *)crc + *crc);
 }
 
-static int check_version(Elf_Shdr *sechdrs,
-			 unsigned int versindex,
+static int check_version(const struct load_info *info,
 			 const char *symname,
 			 struct module *mod,
 			 const s32 *crc)
 {
+	Elf_Shdr *sechdrs = info->sechdrs;
+	unsigned int versindex = info->index.vers;
 	unsigned int i, num_versions;
 	struct modversion_info *versions;
 
@@ -1370,17 +1366,16 @@ static int check_version(Elf_Shdr *sechdrs,
 	}
 
 	/* Broken toolchain. Warn once, then let it go.. */
-	pr_warn_once("%s: no symbol version for %s\n", mod->name, symname);
+	pr_warn_once("%s: no symbol version for %s\n", info->name, symname);
 	return 1;
 
 bad_version:
 	pr_warn("%s: disagrees about version of symbol %s\n",
-	       mod->name, symname);
+	       info->name, symname);
 	return 0;
 }
 
-static inline int check_modstruct_version(Elf_Shdr *sechdrs,
-					  unsigned int versindex,
+static inline int check_modstruct_version(const struct load_info *info,
 					  struct module *mod)
 {
 	const s32 *crc;
@@ -1396,8 +1391,8 @@ static inline int check_modstruct_version(Elf_Shdr *sechdrs,
 		BUG();
 	}
 	preempt_enable();
-	return check_version(sechdrs, versindex,
-			     VMLINUX_SYMBOL_STR(module_layout), mod, crc);
+	return check_version(info, VMLINUX_SYMBOL_STR(module_layout),
+			     mod, crc);
 }
 
 /* First part is kernel version, which we ignore if module has crcs. */
@@ -1411,8 +1406,7 @@ static inline int same_magic(const char *amagic, const char *bmagic,
 	return strcmp(amagic, bmagic) == 0;
 }
 #else
-static inline int check_version(Elf_Shdr *sechdrs,
-				unsigned int versindex,
+static inline int check_version(const struct load_info *info,
 				const char *symname,
 				struct module *mod,
 				const s32 *crc)
@@ -1420,8 +1414,7 @@ static inline int check_version(Elf_Shdr *sechdrs,
 	return 1;
 }
 
-static inline int check_modstruct_version(Elf_Shdr *sechdrs,
-					  unsigned int versindex,
+static inline int check_modstruct_version(const struct load_info *info,
 					  struct module *mod)
 {
 	return 1;
@@ -1457,7 +1450,7 @@ static const struct kernel_symbol *resolve_symbol(struct module *mod,
 	if (!sym)
 		goto unlock;
 
-	if (!check_version(info->sechdrs, info->index.vers, name, mod, crc)) {
+	if (!check_version(info, name, mod, crc)) {
 		sym = ERR_PTR(-EINVAL);
 		goto getname;
 	}
@@ -1720,21 +1713,6 @@ static inline void remove_notes_attrs(struct module *mod)
 }
 #endif /* CONFIG_KALLSYMS */
 
-static void add_usage_links(struct module *mod)
-{
-#ifdef CONFIG_MODULE_UNLOAD
-	struct module_use *use;
-	int nowarn;
-
-	mutex_lock(&module_mutex);
-	list_for_each_entry(use, &mod->target_list, target_list) {
-		nowarn = sysfs_create_link(use->target->holders_dir,
-					   &mod->mkobj.kobj, mod->name);
-	}
-	mutex_unlock(&module_mutex);
-#endif
-}
-
 static void del_usage_links(struct module *mod)
 {
 #ifdef CONFIG_MODULE_UNLOAD
@@ -1745,6 +1723,26 @@ static void del_usage_links(struct module *mod)
 		sysfs_remove_link(use->target->holders_dir, mod->name);
 	mutex_unlock(&module_mutex);
 #endif
+}
+
+static int add_usage_links(struct module *mod)
+{
+	int ret = 0;
+#ifdef CONFIG_MODULE_UNLOAD
+	struct module_use *use;
+
+	mutex_lock(&module_mutex);
+	list_for_each_entry(use, &mod->target_list, target_list) {
+		ret = sysfs_create_link(use->target->holders_dir,
+					&mod->mkobj.kobj, mod->name);
+		if (ret)
+			break;
+	}
+	mutex_unlock(&module_mutex);
+	if (ret)
+		del_usage_links(mod);
+#endif
+	return ret;
 }
 
 static int module_add_modinfo_attrs(struct module *mod)
@@ -1855,7 +1853,10 @@ static int mod_sysfs_setup(struct module *mod,
 	if (err)
 		goto out_unreg_param;
 
-	add_usage_links(mod);
+	err = add_usage_links(mod);
+	if (err)
+		goto out_unreg_modinfo_attrs;
+
 	add_sect_attrs(mod, info);
 	add_notes_attrs(mod, info);
 
@@ -1888,8 +1889,9 @@ out_remove_attrs:
 	remove_notes_attrs(mod);
 	remove_sect_attrs(mod);
 	del_usage_links(mod);
-	module_remove_modinfo_attrs(mod);
 #endif
+out_unreg_modinfo_attrs:
+	module_remove_modinfo_attrs(mod);
 out_unreg_param:
 	module_param_sysfs_remove(mod);
 out_unreg_holders:
@@ -2213,8 +2215,6 @@ static void free_module(struct module *mod)
 
 	/* Remove dynamic debug info */
 	ddebug_remove_module(mod->name);
-
-	dwarf_remove_table(mod->dwarf_info, false);
 
 	/* Arch-specific cleanup. */
 	module_arch_cleanup(mod);
@@ -2950,7 +2950,7 @@ static int copy_module_from_user(const void __user *umod, unsigned long len,
 
 	/* Suck in entire file: we'll want most of it. */
 	info->hdr = __vmalloc(info->len,
-			GFP_KERNEL | __GFP_HIGHMEM | __GFP_NOWARN, PAGE_KERNEL);
+			GFP_KERNEL | __GFP_NOWARN, PAGE_KERNEL);
 	if (!info->hdr)
 		return -ENOMEM;
 
@@ -2998,9 +2998,15 @@ static int rewrite_section_headers(struct load_info *info, int flags)
 		info->index.vers = 0; /* Pretend no __versions section! */
 	else
 		info->index.vers = find_sec(info, "__versions");
-	info->index.info = find_sec(info, ".modinfo");
-	info->sechdrs[info->index.info].sh_flags &= ~(unsigned long)SHF_ALLOC;
 	info->sechdrs[info->index.vers].sh_flags &= ~(unsigned long)SHF_ALLOC;
+
+	info->index.info = find_sec(info, ".modinfo");
+	if (!info->index.info)
+		info->name = "(missing .modinfo section)";
+	else
+		info->name = get_modinfo(info, "name");
+	info->sechdrs[info->index.info].sh_flags &= ~(unsigned long)SHF_ALLOC;
+
 	return 0;
 }
 
@@ -3040,23 +3046,29 @@ static struct module *setup_load_info(struct load_info *info, int flags)
 
 	info->index.mod = find_sec(info, ".gnu.linkonce.this_module");
 	if (!info->index.mod) {
-		pr_warn("No module found in object\n");
+		pr_warn("%s: No module found in object\n",
+			info->name ?: "(missing .modinfo name field)");
 		return ERR_PTR(-ENOEXEC);
 	}
 	/* This is temporary: point mod into copy of data. */
 	mod = (void *)info->sechdrs[info->index.mod].sh_addr;
 
+	/*
+	 * If we didn't load the .modinfo 'name' field, fall back to
+	 * on-disk struct mod 'name' field.
+	 */
+	if (!info->name)
+		info->name = mod->name;
+
 	if (info->index.sym == 0) {
-		pr_warn("%s: module has no symbols (stripped?)\n", mod->name);
+		pr_warn("%s: module has no symbols (stripped?)\n", info->name);
 		return ERR_PTR(-ENOEXEC);
 	}
 
 	info->index.pcpu = find_pcpusec(info);
 
-	info->index.dwarf = find_dwarf(info);
-
 	/* Check module struct version now, before we try to use module. */
-	if (!check_modstruct_version(info->sechdrs, info->index.vers, mod))
+	if (!check_modstruct_version(info, mod))
 		return ERR_PTR(-ENOEXEC);
 
 	return mod;
@@ -3077,7 +3089,7 @@ static int check_modinfo(struct module *mod, struct load_info *info, int flags)
 			return err;
 	} else if (!same_magic(modmagic, vermagic, info->index.vers)) {
 		pr_err("%s: version magic '%s' should be '%s'\n",
-		       mod->name, modmagic, vermagic);
+		       info->name, modmagic, vermagic);
 		return -ENOEXEC;
 	}
 
@@ -3162,9 +3174,9 @@ static int find_module_sections(struct module *mod, struct load_info *info)
 	mod->trace_events = section_objs(info, "_ftrace_events",
 					 sizeof(*mod->trace_events),
 					 &mod->num_trace_events);
-	mod->trace_enums = section_objs(info, "_ftrace_enum_map",
-					sizeof(*mod->trace_enums),
-					&mod->num_trace_enums);
+	mod->trace_evals = section_objs(info, "_ftrace_eval_map",
+					sizeof(*mod->trace_evals),
+					&mod->num_trace_evals);
 #endif
 #ifdef CONFIG_TRACING
 	mod->trace_bprintk_fmt_start = section_objs(info, "__trace_printk_fmt",
@@ -3327,7 +3339,7 @@ int __weak module_frob_arch_sections(Elf_Ehdr *hdr,
 
 /* module_blacklist is a comma-separated list of module names */
 static char *module_blacklist;
-static bool blacklisted(char *module_name)
+static bool blacklisted(const char *module_name)
 {
 	const char *p;
 	size_t len;
@@ -3357,7 +3369,7 @@ static struct module *layout_and_allocate(struct load_info *info, int flags)
 	if (IS_ERR(mod))
 		return mod;
 
-	if (blacklisted(mod->name))
+	if (blacklisted(info->name))
 		return ERR_PTR(-EPERM);
 
 	err = check_modinfo(mod, info, flags);
@@ -3544,7 +3556,6 @@ static noinline int do_init_module(struct module *mod)
 	/* Drop initial reference. */
 	module_put(mod);
 	trim_init_extable(mod);
-	dwarf_remove_table(mod->dwarf_info, true);
 #ifdef CONFIG_KALLSYMS
 	/* Switch to core kallsyms now init is done: kallsyms may be walking! */
 	rcu_assign_pointer(mod->kallsyms, &mod->core_kallsyms);
@@ -3819,9 +3830,6 @@ static int load_module(struct load_info *info, const char __user *uargs,
 		if (err < 0)
 			goto sysfs_cleanup;
 	}
-
-	/* Initialize dwarf table */
-	add_dwarf_table(mod, info);
 
 	/* Get rid of temporary copy. */
 	free_copy(info);
@@ -4127,7 +4135,7 @@ unsigned long module_kallsyms_lookup_name(const char *name)
 
 	/* Don't lock: we're in enough trouble already. */
 	preempt_disable();
-	if ((colon = strchr(name, ':')) != NULL) {
+	if ((colon = strnchr(name, MODULE_NAME_LEN, ':')) != NULL) {
 		if ((mod = find_module_all(name, colon - name, false)) != NULL)
 			ret = mod_find_symname(mod, colon+1);
 	} else {
@@ -4290,7 +4298,7 @@ const struct exception_table_entry *search_module_extables(unsigned long addr)
 		goto out;
 
 	e = search_extable(mod->extable,
-			   mod->extable + mod->num_exentries - 1,
+			   mod->num_exentries,
 			   addr);
 out:
 	preempt_enable();

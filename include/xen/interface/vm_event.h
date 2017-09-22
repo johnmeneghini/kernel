@@ -105,6 +105,11 @@
  * if any of those flags are set, only those will be honored).
  */
 #define VM_EVENT_FLAG_SET_EMUL_INSN_DATA (1 << 9)
+/*
+ * Have a one-shot VM_EVENT_REASON_INTERRUPT event sent for the first
+ * interrupt pending after resuming the VCPU.
+ */
+#define VM_EVENT_FLAG_GET_NEXT_INTERRUPT (1 << 10)
 
 /*
  * Reasons for the vm event request
@@ -139,6 +144,10 @@
  *       These kinds of events will be filtered out in future versions.
  */
 #define VM_EVENT_REASON_PRIVILEGED_CALL         11
+/* An interrupt has been delivered. */
+#define VM_EVENT_REASON_INTERRUPT               12
+/* A descriptor table register was accessed. */
+#define VM_EVENT_REASON_DESCRIPTOR_ACCESS       13
 
 /* Supported values for the vm_event_write_ctrlreg index. */
 #define VM_EVENT_X86_CR0    0
@@ -252,11 +261,41 @@ struct vm_event_mov_to_msr {
     uint64_t value;
 };
 
+#define VM_EVENT_DESC_IDTR           1
+#define VM_EVENT_DESC_GDTR           2
+#define VM_EVENT_DESC_LDTR           3
+#define VM_EVENT_DESC_TR             4
+
+struct vm_event_desc_access {
+    union {
+        struct {
+            uint32_t instr_info;         /* VMX: VMCS Instruction-Information */
+            uint32_t _pad1;
+            uint64_t exit_qualification; /* VMX: VMCS Exit Qualification */
+        } vmx;
+        struct {
+            uint64_t exitinfo;           /* SVM: VMCB EXITINFO */
+            uint64_t _pad2;
+        } svm;
+    } arch;
+    uint8_t descriptor;                  /* VM_EVENT_DESC_* */
+    uint8_t is_write;
+    uint8_t _pad[6];
+};
+
 struct vm_event_cpuid {
     uint32_t insn_length;
     uint32_t leaf;
     uint32_t subleaf;
     uint32_t _pad;
+};
+
+struct vm_event_interrupt_x86 {
+    uint32_t vector;
+    uint32_t type;
+    uint32_t error_code;
+    uint32_t _pad;
+    uint64_t cr2;
 };
 
 #define MEM_PAGING_DROP_PAGE       (1 << 0)
@@ -298,10 +337,14 @@ typedef struct vm_event_st {
         struct vm_event_mem_access            mem_access;
         struct vm_event_write_ctrlreg         write_ctrlreg;
         struct vm_event_mov_to_msr            mov_to_msr;
+        struct vm_event_desc_access           desc_access;
         struct vm_event_singlestep            singlestep;
         struct vm_event_debug                 software_breakpoint;
         struct vm_event_debug                 debug_exception;
         struct vm_event_cpuid                 cpuid;
+        union {
+            struct vm_event_interrupt_x86     x86;
+        } interrupt;
     } u;
 
     union {

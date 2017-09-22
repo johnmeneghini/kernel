@@ -1,7 +1,7 @@
 /*
  * CPU Microcode Update Driver for Linux
  *
- * Copyright (C) 2000-2006 Tigran Aivazian <tigran@aivazian.fsnet.co.uk>
+ * Copyright (C) 2000-2006 Tigran Aivazian <aivazian.tigran@gmail.com>
  *	      2006	Shaohua Li <shaohua.li@intel.com>
  *	      2013-2016	Borislav Petkov <bp@alien8.de>
  *
@@ -150,11 +150,9 @@ extern struct builtin_fw __end_builtin_fw[];
 bool get_builtin_firmware(struct cpio_data *cd, const char *name)
 {
 #ifdef CONFIG_FW_LOADER
-	struct builtin_fw *b_fw = __start_builtin_fw;
+	struct builtin_fw *b_fw;
 
-	OPTIMIZER_HIDE_VAR(b_fw);
-
-	for (; b_fw != __end_builtin_fw; b_fw++) {
+	for (b_fw = __start_builtin_fw; b_fw != __end_builtin_fw; b_fw++) {
 		if (!strcmp(name, b_fw->name)) {
 			cd->size = b_fw->size;
 			cd->data = b_fw->data;
@@ -292,6 +290,17 @@ struct cpio_data find_microcode_in_initrd(const char *path, bool use_pa)
 			return (struct cpio_data){ NULL, 0, "" };
 		if (initrd_start)
 			start = initrd_start;
+	} else {
+		/*
+		 * The picture with physical addresses is a bit different: we
+		 * need to get the *physical* address to which the ramdisk was
+		 * relocated, i.e., relocated_ramdisk (not initrd_start) and
+		 * since we're running from physical addresses, we need to access
+		 * relocated_ramdisk through its *physical* address too.
+		 */
+		u64 *rr = (u64 *)__pa_nodebug(&relocated_ramdisk);
+		if (*rr)
+			start = *rr;
 	}
 
 	return find_cpio_data(path, (void *)start, size, NULL);
@@ -552,7 +561,7 @@ static struct attribute *mc_default_attrs[] = {
 	NULL
 };
 
-static struct attribute_group mc_attr_group = {
+static const struct attribute_group mc_attr_group = {
 	.attrs			= mc_default_attrs,
 	.name			= "microcode",
 };
@@ -698,7 +707,7 @@ static struct attribute *cpu_root_microcode_attrs[] = {
 	NULL
 };
 
-static struct attribute_group cpu_root_microcode_group = {
+static const struct attribute_group cpu_root_microcode_group = {
 	.name  = "microcode",
 	.attrs = cpu_root_microcode_attrs,
 };

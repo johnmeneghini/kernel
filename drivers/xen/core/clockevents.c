@@ -125,7 +125,9 @@ static DEFINE_PER_CPU(struct clock_event_device, xen_clock_event) = {
 	.features	= CLOCK_EVT_FEAT_ONESHOT,
 
 	.max_delta_ns	= 0xffffffff,
+	.max_delta_ticks = 0xffffffff,
 	.min_delta_ns	= TIMER_SLOP,
+	.min_delta_ticks = TIMER_SLOP,
 
 	.mult		= 1,
 	.shift		= 0,

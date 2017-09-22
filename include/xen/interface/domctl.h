@@ -37,7 +37,7 @@
 #include "hvm/save.h"
 #include "memory.h"
 
-#define XEN_DOMCTL_INTERFACE_VERSION 0x0000000c
+#define XEN_DOMCTL_INTERFACE_VERSION 0x0000000d
 
 /*
  * NB. xen_domctl.domain is an IN/OUT parameter for this operation.
@@ -60,11 +60,8 @@ struct xen_domctl_createdomain {
  /* Disable out-of-sync shadow page tables? */
 #define _XEN_DOMCTL_CDF_oos_off       3
 #define XEN_DOMCTL_CDF_oos_off        (1U<<_XEN_DOMCTL_CDF_oos_off)
- /* Is this a PVH guest (as opposed to an HVM or PV guest)? */
-#define _XEN_DOMCTL_CDF_pvh_guest     4
-#define XEN_DOMCTL_CDF_pvh_guest      (1U<<_XEN_DOMCTL_CDF_pvh_guest)
  /* Is this a xenstore domain? */
-#define _XEN_DOMCTL_CDF_xs_domain     5
+#define _XEN_DOMCTL_CDF_xs_domain     4
 #define XEN_DOMCTL_CDF_xs_domain      (1U<<_XEN_DOMCTL_CDF_xs_domain)
     uint32_t flags;
     struct xen_arch_domainconfig config;
@@ -97,14 +94,11 @@ struct xen_domctl_getdomaininfo {
  /* Being debugged.  */
 #define _XEN_DOMINF_debugged  6
 #define XEN_DOMINF_debugged   (1U<<_XEN_DOMINF_debugged)
-/* domain is PVH */
-#define _XEN_DOMINF_pvh_guest 7
-#define XEN_DOMINF_pvh_guest  (1U<<_XEN_DOMINF_pvh_guest)
 /* domain is a xenstore domain */
-#define _XEN_DOMINF_xs_domain 8
+#define _XEN_DOMINF_xs_domain 7
 #define XEN_DOMINF_xs_domain  (1U<<_XEN_DOMINF_xs_domain)
 /* domain has hardware assisted paging */
-#define _XEN_DOMINF_hap       9
+#define _XEN_DOMINF_hap       8
 #define XEN_DOMINF_hap        (1U<<_XEN_DOMINF_hap)
  /* XEN_DOMINF_shutdown guest-supplied code.  */
 #define XEN_DOMINF_shutdownmask 255
@@ -352,6 +346,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_max_vcpus_t);
 #define XEN_SCHEDULER_CREDIT2  6
 #define XEN_SCHEDULER_ARINC653 7
 #define XEN_SCHEDULER_RTDS     8
+#define XEN_SCHEDULER_NULL     9
 
 typedef struct xen_domctl_sched_credit {
     uint16_t weight;
@@ -1129,6 +1124,8 @@ DEFINE_XEN_GUEST_HANDLE(xen_domctl_psr_cmt_op_t);
 #define XEN_DOMCTL_MONITOR_EVENT_DEBUG_EXCEPTION       5
 #define XEN_DOMCTL_MONITOR_EVENT_CPUID                 6
 #define XEN_DOMCTL_MONITOR_EVENT_PRIVILEGED_CALL       7
+#define XEN_DOMCTL_MONITOR_EVENT_INTERRUPT             8
+#define XEN_DOMCTL_MONITOR_EVENT_DESC_ACCESS           9
 
 struct xen_domctl_monitor_op {
     uint32_t op; /* XEN_DOMCTL_MONITOR_OP_* */

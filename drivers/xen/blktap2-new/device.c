@@ -4,6 +4,7 @@
 #include <linux/hdreg.h>
 #include <scsi/scsi.h>
 #include <scsi/scsi_ioctl.h>
+#include <scsi/scsi_request.h>
 
 #include "blktap.h"
 
@@ -242,8 +243,9 @@ blktap_device_run_queue(struct blktap *tap)
 			break;
 
 		if (blk_rq_is_passthrough(rq)) {
-			rq->errors = (DID_ERROR << 16) |
-				     (DRIVER_INVALID << 24);
+			if (blk_rq_is_scsi(rq))
+				scsi_req(rq)->result = (DID_ERROR << 16) |
+				                       (DRIVER_INVALID << 24);
 			__blktap_end_queued_rq(rq, -EOPNOTSUPP);
 			continue;
 		}

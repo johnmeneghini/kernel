@@ -271,11 +271,27 @@ static void xenkbd_disconnect_backend(struct xenkbd_info *info)
 	info->irq = -1;
 }
 
+static void xenkbd_set_connected(struct xenbus_device *dev)
+{
+	struct xenkbd_info *info = dev_get_drvdata(&dev->dev);
+
+	if (xenbus_read_unsigned(info->xbdev->otherend,
+				 "feature-abs-pointer", 0)) {
+		int ret = xenbus_write(XBT_NIL, info->xbdev->nodename,
+				       "request-abs-pointer", "1");
+
+		if (ret)
+			printk(KERN_WARNING "xenkbd: can't request abs-pointer");
+	}
+
+	xenbus_switch_state(dev, XenbusStateConnected);
+}
+
 static void xenkbd_backend_changed(struct xenbus_device *dev,
 				   enum xenbus_state backend_state)
 {
 	struct xenkbd_info *info = dev_get_drvdata(&dev->dev);
-	int ret, val;
+	int val;
 
 	switch (backend_state) {
 	case XenbusStateInitialising:
@@ -286,15 +302,7 @@ static void xenkbd_backend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateInitWait:
-	InitWait:
-		if (xenbus_read_unsigned(info->xbdev->otherend,
-					 "feature-abs-pointer", 0)) {
-			ret = xenbus_write(XBT_NIL, info->xbdev->nodename,
-					   "request-abs-pointer", "1");
-			if (ret)
-				; /* FIXME */
-		}
-		xenbus_switch_state(dev, XenbusStateConnected);
+		xenkbd_set_connected(dev);
 		break;
 
 	case XenbusStateConnected:
@@ -304,7 +312,8 @@ static void xenkbd_backend_changed(struct xenbus_device *dev,
 		 * get Connected twice here.
 		 */
 		if (dev->state != XenbusStateConnected)
-			goto InitWait; /* no InitWait seen yet, fudge it */
+			/* No InitWait seen yet, fudge it. */
+			xenkbd_set_connected(dev);
 
 		/* Set input abs params to match backend screen res */
 		if (xenbus_scanf(XBT_NIL, info->xbdev->otherend,

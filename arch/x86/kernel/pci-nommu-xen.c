@@ -11,6 +11,8 @@
 #include <asm/gnttab_dma.h>
 #include <asm/bug.h>
 
+#define NOMMU_MAPPING_ERROR		0
+
 #define IOMMU_BUG_ON(test)				\
 do {							\
 	if (unlikely(test)) {				\
@@ -90,6 +92,11 @@ static void nommu_sync_sg_for_device(struct device *dev,
 	flush_write_buffers();
 }
 
+static int nommu_mapping_error(struct device *dev, dma_addr_t dma_addr)
+{
+	return dma_addr == NOMMU_MAPPING_ERROR;
+}
+
 static int nommu_dma_supported(struct device *hwdev, u64 mask)
 {
 	return 1;
@@ -104,5 +111,6 @@ const struct dma_map_ops nommu_dma_ops = {
 	.unmap_sg		= gnttab_unmap_sg,
 	.sync_single_for_device = nommu_sync_single_for_device,
 	.sync_sg_for_device	= nommu_sync_sg_for_device,
+	.mapping_error		= nommu_mapping_error,
 	.dma_supported		= nommu_dma_supported,
 };

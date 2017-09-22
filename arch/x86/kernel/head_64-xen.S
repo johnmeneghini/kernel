@@ -62,8 +62,13 @@ startup_64:
 GLOBAL(name)
 
 	__PAGE_ALIGNED_BSS
-NEXT_PAGE(init_level4_pgt)
+NEXT_PAGE(init_top_pgt)
 	.fill	512,8,0
+
+#ifdef CONFIG_X86_5LEVEL
+NEXT_PAGE(level4_kernel_pgt)
+	.fill	512,8,0
+#endif
 
 NEXT_PAGE(level3_kernel_pgt)
 	.fill	512,8,0

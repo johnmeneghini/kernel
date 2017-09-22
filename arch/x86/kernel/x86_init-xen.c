@@ -16,7 +16,7 @@
 #include <asm/mpspec.h>
 #include <asm/setup.h>
 #include <asm/apic.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 #include <asm/time.h>
 #include <asm/irq.h>
 #include <asm/pat.h>
@@ -40,7 +40,7 @@ struct x86_init_ops x86_init __initdata = {
 		.probe_roms		= x86_init_noop,
 #endif
 		.reserve_resources	= reserve_standard_io_resources,
-		.memory_setup		= default_machine_specific_memory_setup,
+		.memory_setup		= e820__memory_setup_default,
 	},
 
 	.mpparse = {

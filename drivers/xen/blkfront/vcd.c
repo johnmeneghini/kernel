@@ -67,7 +67,8 @@ static void submit_message(struct blkfront_info *info, void *sp)
 		goto out;
 
 	req->rq_disk = info->gd;
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(4,13,0)
+#elif LINUX_VERSION_CODE >= KERNEL_VERSION(4,11,0)
 	scsi_req_init(req);
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,19)
 	req->cmd_type = REQ_TYPE_BLOCK_PC;

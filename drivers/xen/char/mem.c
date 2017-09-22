@@ -180,6 +180,11 @@ static const struct vm_operations_struct mmap_mem_ops = {
 static int xen_mmap_mem(struct file *file, struct vm_area_struct *vma)
 {
 	size_t size = vma->vm_end - vma->vm_start;
+	phys_addr_t offset = (phys_addr_t)vma->vm_pgoff << PAGE_SHIFT;
+
+	/* It's illegal to wrap around the end of the physical address space. */
+	if (offset + (phys_addr_t)size - 1 < offset)
+		return -EINVAL;
 
 	if (uncached_access(file))
 		vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);

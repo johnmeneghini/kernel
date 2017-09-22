@@ -488,17 +488,37 @@ void __ref load_percpu_segment(int cpu)
 	load_stack_canary_segment();
 }
 
-/*
- * Current gdt points %fs at the "master" per-cpu area: after this,
- * it's on the real one.
- */
-void switch_to_new_gdt(int cpu)
+/* Setup the fixmap mapping only once per-processor */
+static inline void setup_fixmap_gdt(int cpu)
+{
+#if defined(CONFIG_X86_64) || defined(CONFIG_XEN)
+	/* On 64-bit and Xen systems, we use a read-only fixmap GDT. */
+	pgprot_t prot = PAGE_KERNEL_RO;
+#else
+	/*
+	 * On native 32-bit systems, the GDT cannot be read-only because
+	 * our double fault handler uses a task gate, and entering through
+	 * a task gate needs to change an available TSS to busy.  If the GDT
+	 * is read-only, that will triple fault.
+	 *
+	 * On Xen PV, the GDT must be read-only because the hypervisor requires
+	 * it.
+	 */
+	pgprot_t prot = boot_cpu_has(X86_FEATURE_XENPV) ?
+		PAGE_KERNEL_RO : PAGE_KERNEL;
+#endif
+
+	__set_fixmap(get_cpu_gdt_ro_index(cpu), get_cpu_gdt_paddr(cpu), prot);
+}
+
+/* Load the original GDT from the per-cpu structure */
+void load_direct_gdt(int cpu)
 {
 	struct desc_ptr gdt_descr;
 	unsigned long va, frames[16];
-	int f;
+	unsigned int f;
 
-	gdt_descr.address = (long)get_cpu_gdt_table(cpu);
+	gdt_descr.address = (long)get_cpu_gdt_rw(cpu);
 	gdt_descr.size = GDT_SIZE - 1;
 
 	for (va = gdt_descr.address, f = 0;
@@ -510,9 +530,31 @@ void switch_to_new_gdt(int cpu)
 	}
 	if (HYPERVISOR_set_gdt(frames, (gdt_descr.size + 1) / 8))
 		BUG();
+}
+EXPORT_SYMBOL_GPL(load_direct_gdt);
 
+/* Load a fixmap remapping of the per-cpu GDT */
+void load_fixmap_gdt(int cpu)
+{
+#ifndef CONFIG_XEN
+	struct desc_ptr gdt_descr;
+
+	gdt_descr.address = (long)get_cpu_gdt_ro(cpu);
+	gdt_descr.size = GDT_SIZE - 1;
+	load_gdt(&gdt_descr);
+#endif
+}
+EXPORT_SYMBOL_GPL(load_fixmap_gdt);
+
+/*
+ * Current gdt points %fs at the "master" per-cpu area: after this,
+ * it's on the real one.
+ */
+void switch_to_new_gdt(int cpu)
+{
+	/* Load the original GDT */
+	load_direct_gdt(cpu);
 	/* Reload the per-cpu base */
-
 	load_percpu_segment(cpu);
 }
 
@@ -1173,7 +1215,6 @@ static void identify_cpu(struct cpuinfo_x86 *c)
 	detect_ht(c);
 #endif
 
-	init_hypervisor(c);
 	x86_init_rdrand(c);
 	x86_init_cache_qos(c);
 	setup_pku(c);
@@ -1351,7 +1392,7 @@ DEFINE_PER_CPU_FIRST(union irq_stack_union,
 void xen_switch_pt(void)
 {
 #ifdef CONFIG_XEN
-	xen_pt_switch(init_level4_pgt);
+	xen_pt_switch(init_top_pgt);
 #endif
 }
 
@@ -1675,6 +1716,9 @@ void cpu_init(void)
 	if (is_uv_system())
 		uv_cpu_init();
 #endif
+
+	setup_fixmap_gdt(cpu);
+	load_fixmap_gdt(cpu);
 }
 
 #else
@@ -1731,6 +1775,9 @@ void cpu_init(void)
 	dbg_restore_debug_regs();
 
 	fpu__init_cpu();
+
+	setup_fixmap_gdt(cpu);
+	load_fixmap_gdt(cpu);
 }
 #endif
 

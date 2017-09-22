@@ -232,9 +232,9 @@ DEFINE_XEN_GUEST_HANDLE(xen_machphys_mapping_t);
 				    * XENMEM_add_to_physmap_batch only. */
 #define XENMAPSPACE_dev_mmio     5 /* device mmio region
 				      ARM only; the region is mapped in
-				      Stage-2 using the memory attribute
-				      "Device-nGnRE" (previously named
-				      "Device" on ARMv7) */
+				      Stage-2 using the Normal Memory
+				      Inner/Outer Write-Back Cacheable
+				      memory attribute. */
 /* ` } */
 
 /*
@@ -354,6 +354,8 @@ DEFINE_XEN_GUEST_HANDLE(xen_memory_map_t);
 /*
  * Returns the real physical memory map. Passes the same structure as
  * XENMEM_memory_map.
+ * Specifying buffer as NULL will return the number of entries required
+ * to store the complete memory map.
  * arg == addr of struct xen_memory_map.
  */
 #define XENMEM_machine_memory_map   10

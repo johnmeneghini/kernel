@@ -571,6 +571,8 @@ static void connect(struct blkfront_info *info)
 		pr_info("Setting capacity to %Lu\n", sectors);
 		set_capacity(info->gd, sectors);
 		revalidate_disk(info->gd);
+		kobject_uevent_env(&disk_to_dev(info->gd)->kobj, KOBJ_CHANGE,
+				   (char *[]){"RESIZE=1", NULL});
 
 		/* fall through */
 	case BLKIF_STATE_SUSPENDED:
@@ -1278,9 +1280,10 @@ void do_blkif_request(struct request_queue *rq)
 		    ((req->cmd_flags & (REQ_FLUSH | REQ_FUA)) >
 #endif
 		     (info->feature_flush & (REQ_PREFLUSH | REQ_FUA)))) {
-			req->errors = (DID_ERROR << 16) |
-				      (DRIVER_INVALID << 24);
-			__blk_end_request_all(req, -EOPNOTSUPP);
+			if (blk_rq_is_scsi(req))
+				scsi_req(req)->result = (DID_ERROR << 16) |
+				                        (DRIVER_INVALID << 24);
+			__blk_end_request_all(req, BLK_STS_NOTSUPP);
 			continue;
 		}
 
@@ -1358,7 +1361,8 @@ static irqreturn_t blkif_int(int irq, void *dev_id)
 		if (!done)
 			continue;
 
-		ret = bret->status == BLKIF_RSP_OKAY ? 0 : -EIO;
+		ret = bret->status == BLKIF_RSP_OKAY
+		      ? BLK_STS_OK : BLK_STS_IOERR;
 		switch (bret->operation) {
 			const char *kind;
 
@@ -1366,21 +1370,21 @@ static irqreturn_t blkif_int(int irq, void *dev_id)
 		case BLKIF_OP_WRITE_BARRIER:
 			kind = "";
 			if (unlikely(bret->status == BLKIF_RSP_EOPNOTSUPP))
-				ret = -EOPNOTSUPP;
+				ret = BLK_STS_NOTSUPP;
 			if (unlikely(bret->status == BLKIF_RSP_ERROR &&
 				     !(info->shadow[id].req.operation ==
 				       BLKIF_OP_INDIRECT
 				       ? info->shadow[id].ind.nr_segments
 				       : info->shadow[id].req.nr_segments))) {
 				kind = "empty ";
-				ret = -EOPNOTSUPP;
+				ret = BLK_STS_NOTSUPP;
 			}
 			if (unlikely(ret)) {
-				if (ret == -EOPNOTSUPP) {
+				if (ret == BLK_STS_NOTSUPP) {
 					pr_warn("blkfront: %s: %s%s op failed\n",
 					        info->gd->disk_name, kind,
 						op_name(bret->operation));
-					ret = 0;
+					ret = BLK_STS_OK;
 				}
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(2,6,37)
 				info->feature_flush = 0;
@@ -1406,7 +1410,7 @@ static irqreturn_t blkif_int(int irq, void *dev_id)
 
 				pr_warn("blkfront: %s: discard op failed\n",
 					info->gd->disk_name);
-				ret = -EOPNOTSUPP;
+				ret = BLK_STS_NOTSUPP;
 				info->feature_discard = 0;
 				info->feature_secdiscard = 0;
 				queue_flag_clear(QUEUE_FLAG_DISCARD, rq);

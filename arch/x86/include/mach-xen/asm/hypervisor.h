@@ -74,8 +74,8 @@ extern start_info_t *xen_start_info;
 #define is_initial_xendomain() 0
 #endif
 
-#define init_hypervisor(c) ((void)(c))
-#define init_hypervisor_platform() init_hypervisor(&boot_cpu_data)
+#define init_hypervisor_platform() ((void)0)
+#define hypervisor_init_mem_mapping() ((void)0)
 
 #ifdef CONFIG_XEN
 DECLARE_PER_CPU(struct vcpu_runstate_info, runstate);
@@ -107,7 +107,8 @@ void xen_invlpg(unsigned long ptr);
 void xen_l1_entry_update(pte_t *ptr, pte_t val);
 void xen_l2_entry_update(pmd_t *ptr, pmd_t val);
 void xen_l3_entry_update(pud_t *ptr, pud_t val); /* x86_64/PAE */
-void xen_l4_entry_update(pgd_t *ptr, pgd_t val); /* x86_64 only */
+void xen_l4_entry_update(p4d_t *ptr, p4d_t val); /* x86_64 only */
+void xen_l5_entry_update(pgd_t *ptr, pgd_t val); /* 5-level paging only */
 void xen_pgd_pin(pgd_t *);
 void xen_pgd_unpin(pgd_t *);
 

@@ -14,7 +14,7 @@
 #include <linux/fs.h>
 #include <linux/oprofile.h>
 #include <linux/jiffies.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <linux/ctype.h>
 
 #include "event_buffer.h"

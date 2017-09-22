@@ -167,6 +167,14 @@ void ___pud_free_tlb(struct mmu_gather *tlb, pud_t *pud)
 	paravirt_release_pud(__pa(pud) >> PAGE_SHIFT);
 	tlb_remove_page(tlb, virt_to_page(pud));
 }
+
+#if CONFIG_PGTABLE_LEVELS > 4
+void ___p4d_free_tlb(struct mmu_gather *tlb, p4d_t *p4d)
+{
+	paravirt_release_p4d(__pa(p4d) >> PAGE_SHIFT);
+	tlb_remove_page(tlb, virt_to_page(p4d));
+}
+#endif	/* CONFIG_PGTABLE_LEVELS > 4 */
 #endif	/* CONFIG_PGTABLE_LEVELS > 3 */
 #endif	/* CONFIG_PGTABLE_LEVELS > 2 */
 
@@ -195,29 +203,37 @@ static void _pin_lock(struct mm_struct *mm, int lock) {
 		unsigned g;
 
 		for (g = 0; g <= ((TASK_SIZE_MAX-1) / PGDIR_SIZE); g++, pgd++) {
-			pud_t *pud;
-			unsigned u;
+			p4d_t *p4d;
+			unsigned l4;
 
 			if (pgd_none(*pgd))
 				continue;
-			pud = pud_offset(pgd, 0);
-			for (u = 0; u < PTRS_PER_PUD; u++, pud++) {
-				pmd_t *pmd;
-				unsigned m;
+			p4d = p4d_offset(pgd, 0);
+			for (l4 = 0; l4 < PTRS_PER_P4D; l4++, p4d++) {
+				pud_t *pud;
+				unsigned u;
 
-				if (pud_none(*pud))
+				if (p4d_none(*p4d))
 					continue;
-				pmd = pmd_offset(pud, 0);
-				for (m = 0; m < PTRS_PER_PMD; m++, pmd++) {
-					spinlock_t *ptl;
+				pud = pud_offset(p4d, 0);
+				for (u = 0; u < PTRS_PER_PUD; u++, pud++) {
+					pmd_t *pmd;
+					unsigned m;
 
-					if (pmd_none(*pmd))
+					if (pud_none(*pud))
 						continue;
-					ptl = pte_lockptr(0, pmd);
-					if (lock)
-						spin_lock(ptl);
-					else
-						spin_unlock(ptl);
+					pmd = pmd_offset(pud, 0);
+					for (m = 0; m < PTRS_PER_PMD; m++, pmd++) {
+						spinlock_t *ptl;
+
+						if (pmd_none(*pmd))
+							continue;
+						ptl = pte_lockptr(0, pmd);
+						if (lock)
+							spin_lock(ptl);
+						else
+							spin_unlock(ptl);
+					}
 				}
 			}
 		}
@@ -259,10 +275,7 @@ static inline unsigned int pgd_walk_set_prot(struct page *page, pgprot_t flags,
 static void pgd_walk(pgd_t *pgd_base, pgprot_t flags)
 {
 	pgd_t       *pgd = pgd_base;
-	pud_t       *pud;
-	pmd_t       *pmd;
-	int          g,u,m;
-	unsigned int cpu, seq;
+	unsigned int cpu, seq, g;
 	multicall_entry_t *mcl;
 
 	if (xen_feature(XENFEAT_auto_translated_physmap))
@@ -278,32 +291,57 @@ static void pgd_walk(pgd_t *pgd_base, pgprot_t flags)
 	 * regardless of whether TASK_SIZE_MAX is a multiple of PGDIR_SIZE.
 	 */
 	for (g = 0, seq = 0; g <= ((TASK_SIZE_MAX-1) / PGDIR_SIZE); g++, pgd++) {
+		p4d_t *p4d;
+		unsigned int l4;
+
 		if (pgd_none(*pgd))
 			continue;
-		pud = pud_offset(pgd, 0);
-		if (PTRS_PER_PUD > 1) /* not folded */
-			seq = pgd_walk_set_prot(virt_to_page(pud),flags,cpu,seq);
-		for (u = 0; u < PTRS_PER_PUD; u++, pud++) {
-			if (pud_none(*pud))
+		p4d = p4d_offset(pgd, 0);
+		if (PTRS_PER_P4D > 1) /* not folded */
+			seq = pgd_walk_set_prot(virt_to_page(p4d), flags, cpu, seq);
+		for (l4 = 0; l4 < PTRS_PER_P4D; l4++, p4d++) {
+			pud_t *pud;
+			unsigned int u;
+
+			if (p4d_none(*p4d))
 				continue;
-			pmd = pmd_offset(pud, 0);
-			if (PTRS_PER_PMD > 1) /* not folded */
-				seq = pgd_walk_set_prot(virt_to_page(pmd),flags,cpu,seq);
-			for (m = 0; m < PTRS_PER_PMD; m++, pmd++) {
-				if (pmd_none(*pmd))
+			pud = pud_offset(p4d, 0);
+			if (PTRS_PER_PUD > 1) /* not folded */
+				seq = pgd_walk_set_prot(virt_to_page(pud),
+				                        flags, cpu, seq);
+			for (u = 0; u < PTRS_PER_PUD; u++, pud++) {
+				pmd_t *pmd;
+				unsigned int m;
+
+				if (pud_none(*pud))
 					continue;
-				seq = pgd_walk_set_prot(pmd_page(*pmd),flags,cpu,seq);
+				pmd = pmd_offset(pud, 0);
+				if (PTRS_PER_PMD > 1) /* not folded */
+					seq = pgd_walk_set_prot(virt_to_page(pmd),
+					                        flags, cpu, seq);
+				for (m = 0; m < PTRS_PER_PMD; m++, pmd++) {
+					if (pmd_none(*pmd))
+						continue;
+					seq = pgd_walk_set_prot(pmd_page(*pmd),
+					                        flags, cpu, seq);
+				}
 			}
 		}
 	}
 
 #ifdef CONFIG_X86_PAE
 	for (; g < PTRS_PER_PGD; g++, pgd++) {
+		p4d_t *p4d;
+		pud_t *pud;
+		pmd_t *pmd;
+
 		BUG_ON(pgd_none(*pgd));
-		pud = pud_offset(pgd, 0);
+		p4d = p4d_offset(pgd, 0);
+		BUG_ON(p4d_none(*p4d));
+		pud = pud_offset(p4d, 0);
 		BUG_ON(pud_none(*pud));
 		pmd = pmd_offset(pud, 0);
-		seq = pgd_walk_set_prot(virt_to_page(pmd),flags,cpu,seq);
+		seq = pgd_walk_set_prot(virt_to_page(pmd), flags, cpu, seq);
 	}
 #endif
 
@@ -346,16 +384,17 @@ static void pgd_walk(pgd_t *pgd_base, pgprot_t flags)
 
 void __init xen_init_pgd_pin(void)
 {
-	pgd_t       *pgd = init_mm.pgd;
-	pud_t       *pud;
-	pmd_t       *pmd;
-	unsigned int g, u, m;
+	pgd_t *pgd = init_mm.pgd;
+	unsigned int g;
 
 	if (xen_feature(XENFEAT_auto_translated_physmap))
 		return;
 
 	SetPagePinned(virt_to_page(pgd));
 	for (g = 0; g < PTRS_PER_PGD; g++, pgd++) {
+		p4d_t *p4d;
+		unsigned int l4;
+
 #ifndef CONFIG_X86_PAE
 		if (g >= pgd_index(HYPERVISOR_VIRT_START)
 		    && g <= pgd_index(HYPERVISOR_VIRT_END - 1))
@@ -363,24 +402,37 @@ void __init xen_init_pgd_pin(void)
 #endif
 		if (!pgd_present(*pgd))
 			continue;
-		pud = pud_offset(pgd, 0);
-		if (PTRS_PER_PUD > 1) /* not folded */
-			SetPagePinned(virt_to_page(pud));
-		for (u = 0; u < PTRS_PER_PUD; u++, pud++) {
-			if (!pud_present(*pud) || pud_large(*pud))
+		p4d = p4d_offset(pgd, 0);
+		if (PTRS_PER_P4D > 1) /* not folded */
+			SetPagePinned(virt_to_page(p4d));
+		for (l4 = 0; l4 < PTRS_PER_P4D; l4++, p4d++) {
+			pud_t *pud;
+			unsigned int u;
+
+			if (!p4d_present(*p4d))
 				continue;
-			pmd = pmd_offset(pud, 0);
-			if (PTRS_PER_PMD > 1) /* not folded */
-				SetPagePinned(virt_to_page(pmd));
-			for (m = 0; m < PTRS_PER_PMD; m++, pmd++) {
+			pud = pud_offset(p4d, 0);
+			if (PTRS_PER_PUD > 1) /* not folded */
+				SetPagePinned(virt_to_page(pud));
+			for (u = 0; u < PTRS_PER_PUD; u++, pud++) {
+				pmd_t *pmd;
+				unsigned int m;
+
+				if (!pud_present(*pud) || pud_large(*pud))
+					continue;
+				pmd = pmd_offset(pud, 0);
+				if (PTRS_PER_PMD > 1) /* not folded */
+					SetPagePinned(virt_to_page(pmd));
+				for (m = 0; m < PTRS_PER_PMD; m++, pmd++) {
 #ifdef CONFIG_X86_PAE
-				if (g == pgd_index(HYPERVISOR_VIRT_START)
-				    && m >= pmd_index(HYPERVISOR_VIRT_START))
-					continue;
+					if (g == pgd_index(HYPERVISOR_VIRT_START)
+					    && m >= pmd_index(HYPERVISOR_VIRT_START))
+						continue;
 #endif
-				if (!pmd_present(*pmd) || pmd_large(*pmd))
-					continue;
-				SetPagePinned(pmd_page(*pmd));
+					if (!pmd_present(*pmd) || pmd_large(*pmd))
+						continue;
+					SetPagePinned(pmd_page(*pmd));
+				}
 			}
 		}
 	}
@@ -541,16 +593,20 @@ static void pgd_ctor(struct mm_struct *mm, pgd_t *pgd)
 	   references from swapper_pg_dir. */
 	if (CONFIG_PGTABLE_LEVELS == 2 ||
 	    (CONFIG_PGTABLE_LEVELS == 3 && SHARED_KERNEL_PMD) ||
-	    CONFIG_PGTABLE_LEVELS == 4) {
+	    CONFIG_PGTABLE_LEVELS >= 4) {
 		clone_pgd_range(pgd + KERNEL_PGD_BOUNDARY,
 				swapper_pg_dir + KERNEL_PGD_BOUNDARY,
 				KERNEL_PGD_PTRS);
 	}
 
 #ifdef CONFIG_X86_VSYSCALL_EMULATION
-	/* set level3_user_pgt for vsyscall area */
+	/* set level{3,4}_user_pgt for vsyscall area */
 	__user_pgd(pgd)[pgd_index(VSYSCALL_ADDR)] =
+# ifdef CONFIG_X86_5LEVEL
+		__pgd(__pa_symbol(level4_user_pgt) | _PAGE_TABLE);
+# else
 		__pgd(__pa_symbol(level3_user_pgt) | _PAGE_TABLE);
+# endif
 #endif
 
 	/* list required to sync kernel mapping updates */
@@ -696,13 +752,15 @@ static void pgd_mop_up_pmds(struct mm_struct *mm, pgd_t *pgdp)
 
 static void pgd_prepopulate_pmd(struct mm_struct *mm, pgd_t *pgd, pmd_t *pmds[])
 {
+	p4d_t *p4d;
 	pud_t *pud;
 	int i;
 
 	if (PREALLOCATED_PMDS == 0) /* Work around gcc-3.4.x bug */
 		return;
 
-	pud = pud_offset(pgd, 0);
+	p4d = p4d_offset(pgd, 0);
+	pud = pud_offset(p4d, 0);
 
 	for (i = 0; i < PREALLOCATED_PMDS; i++, pud++) {
 		pmd_t *pmd = pmds[i];
@@ -1076,9 +1134,10 @@ void xen_set_fixmap(enum fixed_addresses idx, phys_addr_t phys, pgprot_t flags)
 		return;
 #else
 	case FIX_WP_TEST:
+#endif
+	case FIX_GDT_REMAP_BEGIN ... FIX_GDT_REMAP_END:
 		pte = pfn_pte(phys >> PAGE_SHIFT, flags);
 		break;
-#endif
 	default:
 		pte = pfn_pte_ma(phys >> PAGE_SHIFT, flags);
 		break;
@@ -1088,6 +1147,28 @@ void xen_set_fixmap(enum fixed_addresses idx, phys_addr_t phys, pgprot_t flags)
 }
 
 #ifdef CONFIG_HAVE_ARCH_HUGE_VMAP
+#ifdef CONFIG_X86_5LEVEL
+/**
+ * p4d_set_huge - setup kernel P4D mapping
+ *
+ * No 512GB pages yet -- always return 0
+ */
+int p4d_set_huge(p4d_t *p4d, phys_addr_t addr, pgprot_t prot)
+{
+	return 0;
+}
+
+/**
+ * p4d_clear_huge - clear kernel P4D mapping when it is set
+ *
+ * No 512GB pages yet -- always return 0
+ */
+int p4d_clear_huge(p4d_t *p4d)
+{
+	return 0;
+}
+#endif
+
 /**
  * pud_set_huge - setup kernel PUD mapping
  *

@@ -30,10 +30,6 @@
 #include <linux/syscore_ops.h>
 #include <linux/tick.h>
 #include <trace/events/power.h>
-#ifdef CONFIG_PARAVIRT_XEN
-#include <xen/xen.h>
-#include <asm/xen/hypercall.h>
-#endif
 
 static LIST_HEAD(cpufreq_policy_list);
 
@@ -636,11 +632,21 @@ show_one(cpuinfo_transition_latency, cpuinfo.transition_latency);
 show_one(scaling_min_freq, min);
 show_one(scaling_max_freq, max);
 
+__weak unsigned int arch_freq_get_on_cpu(int cpu)
+{
+	return 0;
+}
+
 static ssize_t show_scaling_cur_freq(struct cpufreq_policy *policy, char *buf)
 {
 	ssize_t ret;
+	unsigned int freq;
 
-	if (cpufreq_driver && cpufreq_driver->setpolicy && cpufreq_driver->get)
+	freq = arch_freq_get_on_cpu(policy->cpu);
+	if (freq)
+		ret = sprintf(buf, "%u\n", freq);
+	else if (cpufreq_driver && cpufreq_driver->setpolicy &&
+			cpufreq_driver->get)
 		ret = sprintf(buf, "%u\n", cpufreq_driver->get(policy->cpu));
 	else
 		ret = sprintf(buf, "%u\n", policy->cur);
@@ -891,7 +897,7 @@ static ssize_t store(struct kobject *kobj, struct attribute *attr,
 	struct freq_attr *fattr = to_attr(attr);
 	ssize_t ret = -EINVAL;
 
-	get_online_cpus();
+	cpus_read_lock();
 
 	if (cpu_online(policy->cpu)) {
 		down_write(&policy->rwsem);
@@ -899,7 +905,7 @@ static ssize_t store(struct kobject *kobj, struct attribute *attr,
 		up_write(&policy->rwsem);
 	}
 
-	put_online_cpus();
+	cpus_read_unlock();
 
 	return ret;
 }
@@ -1459,15 +1465,6 @@ unsigned int cpufreq_quick_get(unsigned int cpu)
 	if (policy) {
 		ret_freq = policy->cur;
 		cpufreq_cpu_put(policy);
-#ifdef CONFIG_PARAVIRT_XEN
-	} else if (xen_domain()) {
-		struct xen_platform_op op;
-
-		op.cmd = XENPF_get_cpu_freq;
-		op.u.get_cpu_freq.vcpu = cpu;
-		if (HYPERVISOR_platform_op(&op) == 0)
-			ret_freq = op.u.get_cpu_freq.freq;
-#endif
 	}
 
 	return ret_freq;
@@ -1488,15 +1485,6 @@ unsigned int cpufreq_quick_get_max(unsigned int cpu)
 	if (policy) {
 		ret_freq = policy->max;
 		cpufreq_cpu_put(policy);
-#ifdef CONFIG_PARAVIRT_XEN
-	} else if (xen_domain()) {
-		struct xen_platform_op op;
-
-		op.cmd = XENPF_get_cpu_freq_max;
-		op.u.get_cpu_freq.vcpu = cpu;
-		if (HYPERVISOR_platform_op(&op) == 0)
-			ret_freq = op.u.get_cpu_freq.freq;
-#endif
 	}
 
 	return ret_freq;
@@ -2463,7 +2451,7 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 	pr_debug("trying to register driver %s\n", driver_data->name);
 
 	/* Protect against concurrent CPU online/offline. */
-	get_online_cpus();
+	cpus_read_lock();
 
 	write_lock_irqsave(&cpufreq_driver_lock, flags);
 	if (cpufreq_driver) {
@@ -2490,14 +2478,16 @@ int cpufreq_register_driver(struct cpufreq_driver *driver_data)
 	if (!(cpufreq_driver->flags & CPUFREQ_STICKY) &&
 	    list_empty(&cpufreq_policy_list)) {
 		/* if all ->init() calls failed, unregister */
+		ret = -ENODEV;
 		pr_debug("%s: No CPU initialized for driver %s\n", __func__,
 			 driver_data->name);
 		goto err_if_unreg;
 	}
 
-	ret = cpuhp_setup_state_nocalls(CPUHP_AP_ONLINE_DYN, "cpufreq:online",
-					cpuhp_cpufreq_online,
-					cpuhp_cpufreq_offline);
+	ret = cpuhp_setup_state_nocalls_cpuslocked(CPUHP_AP_ONLINE_DYN,
+						   "cpufreq:online",
+						   cpuhp_cpufreq_online,
+						   cpuhp_cpufreq_offline);
 	if (ret < 0)
 		goto err_if_unreg;
 	hp_online = ret;
@@ -2515,7 +2505,7 @@ err_null_driver:
 	cpufreq_driver = NULL;
 	write_unlock_irqrestore(&cpufreq_driver_lock, flags);
 out:
-	put_online_cpus();
+	cpus_read_unlock();
 	return ret;
 }
 EXPORT_SYMBOL_GPL(cpufreq_register_driver);
@@ -2538,17 +2528,17 @@ int cpufreq_unregister_driver(struct cpufreq_driver *driver)
 	pr_debug("unregistering driver %s\n", driver->name);
 
 	/* Protect against concurrent cpu hotplug */
-	get_online_cpus();
+	cpus_read_lock();
 	subsys_interface_unregister(&cpufreq_interface);
 	remove_boost_sysfs_file();
-	cpuhp_remove_state_nocalls(hp_online);
+	cpuhp_remove_state_nocalls_cpuslocked(hp_online);
 
 	write_lock_irqsave(&cpufreq_driver_lock, flags);
 
 	cpufreq_driver = NULL;
 
 	write_unlock_irqrestore(&cpufreq_driver_lock, flags);
-	put_online_cpus();
+	cpus_read_unlock();
 
 	return 0;
 }

@@ -80,7 +80,8 @@ void __init xen_start_kernel(void)
 	/* Do an early initialization of the fixmap area */
 	make_lowmem_page_readonly(swapper_pg_fixmap, XENFEAT_writable_page_tables);
 	addr = __fix_to_virt(FIX_EARLYCON_MEM_BASE);
-	set_pmd(pmd_offset(pud_offset(swapper_pg_dir + pgd_index(addr),
+	set_pmd(pmd_offset(pud_offset(p4d_offset(swapper_pg_dir +
+						 pgd_index(addr), addr),
 				      addr),
 			   addr),
 		__pmd(__pa_symbol(swapper_pg_fixmap) | _PAGE_TABLE));

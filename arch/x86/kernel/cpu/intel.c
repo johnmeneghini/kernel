@@ -91,16 +91,12 @@ static void probe_xeon_phi_r3mwait(struct cpuinfo_x86 *c)
 		return;
 	}
 
-	if (ring3mwait_disabled) {
-		msr_clear_bit(MSR_MISC_FEATURE_ENABLES,
-			      MSR_MISC_FEATURE_ENABLES_RING3MWAIT_BIT);
+	if (ring3mwait_disabled)
 		return;
-	}
-
-	msr_set_bit(MSR_MISC_FEATURE_ENABLES,
-		    MSR_MISC_FEATURE_ENABLES_RING3MWAIT_BIT);
 
 	set_cpu_cap(c, X86_FEATURE_RING3MWAIT);
+	this_cpu_or(msr_misc_features_shadow,
+		    1UL << MSR_MISC_FEATURES_ENABLES_RING3MWAIT_BIT);
 
 	if (c == &boot_cpu_data)
 		ELF_HWCAP2 |= HWCAP2_RING3MWAIT;
@@ -496,6 +492,53 @@ static void intel_bsp_resume(struct cpuinfo_x86 *c)
 	init_intel_energy_perf(c);
 }
 
+static void init_cpuid_fault(struct cpuinfo_x86 *c)
+{
+	u64 msr;
+
+	if (!rdmsrl_safe(MSR_PLATFORM_INFO, &msr) &&
+	    (msr & MSR_PLATFORM_INFO_CPUID_FAULT)) {
+#if defined(CONFIG_XEN) && CONFIG_XEN_COMPAT < 0x040701
+		/*
+		 * Xen prior to 4.7.1 and 4.6.4 does not virtualize
+		 * MSR_PLATFORM_INFO accesses, so we need to write probe
+		 * the MSR_MISC_FEATURES_ENABLES_CPUID_FAULT bit.
+		 */
+		if (c == &boot_cpu_data) {
+			u64 msrval = this_cpu_read(msr_misc_features_shadow);
+			u64 val;
+
+			wrmsrl(MSR_MISC_FEATURES_ENABLES,
+			       msrval ^ MSR_MISC_FEATURES_ENABLES_CPUID_FAULT);
+			rdmsrl(MSR_MISC_FEATURES_ENABLES, val);
+			if (!((val ^ msrval) &
+			      MSR_MISC_FEATURES_ENABLES_CPUID_FAULT))
+				return;
+			wrmsrl(MSR_MISC_FEATURES_ENABLES, msrval);
+		}
+#endif
+			set_cpu_cap(c, X86_FEATURE_CPUID_FAULT);
+	}
+}
+
+static void init_intel_misc_features(struct cpuinfo_x86 *c)
+{
+	u64 msr;
+
+	if (rdmsrl_safe(MSR_MISC_FEATURES_ENABLES, &msr))
+		return;
+
+	/* Clear all MISC features */
+	this_cpu_write(msr_misc_features_shadow, 0);
+
+	/* Check features and update capabilities and shadow control bits */
+	init_cpuid_fault(c);
+	probe_xeon_phi_r3mwait(c);
+
+	msr = this_cpu_read(msr_misc_features_shadow);
+	wrmsrl(MSR_MISC_FEATURES_ENABLES, msr);
+}
+
 static void init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
@@ -614,7 +657,7 @@ static void init_intel(struct cpuinfo_x86 *c)
 
 	init_intel_energy_perf(c);
 
-	probe_xeon_phi_r3mwait(c);
+	init_intel_misc_features(c);
 }
 
 #ifdef CONFIG_X86_32

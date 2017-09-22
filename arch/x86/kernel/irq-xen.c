@@ -174,6 +174,12 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 		seq_printf(p, "%10u ", irq_stats(j)->kvm_posted_intr_ipis);
 	seq_puts(p, "  Posted-interrupt notification event\n");
 
+	seq_printf(p, "%*s: ", prec, "NPI");
+	for_each_online_cpu(j)
+		seq_printf(p, "%10u ",
+			   irq_stats(j)->kvm_posted_intr_nested_ipis);
+	seq_puts(p, "  Nested posted-interrupt event\n");
+
 	seq_printf(p, "%*s: ", prec, "PIW");
 	for_each_online_cpu(j)
 		seq_printf(p, "%10u ",
@@ -341,6 +347,19 @@ __visible void smp_kvm_posted_intr_wakeup_ipi(struct pt_regs *regs)
 	exiting_irq();
 	set_irq_regs(old_regs);
 }
+
+/*
+ * Handler for POSTED_INTERRUPT_NESTED_VECTOR.
+ */
+__visible void smp_kvm_posted_intr_nested_ipi(struct pt_regs *regs)
+{
+	struct pt_regs *old_regs = set_irq_regs(regs);
+
+	entering_ack_irq();
+	inc_irq_stat(kvm_posted_intr_nested_ipis);
+	exiting_irq();
+	set_irq_regs(old_regs);
+}
 #endif
 
 __visible void __irq_entry smp_trace_x86_platform_ipi(struct pt_regs *regs)
@@ -425,6 +444,9 @@ int check_irq_vectors_for_cpu_disable(void)
 		    !cpumask_subset(&affinity_new, &online_new))
 			this_count++;
 	}
+	/* No need to check any further. */
+	if (!this_count)
+		return 0;
 
 	count = 0;
 	for_each_online_cpu(cpu) {
@@ -442,8 +464,10 @@ int check_irq_vectors_for_cpu_disable(void)
 		for (vector = FIRST_EXTERNAL_VECTOR;
 		     vector < first_system_vector; vector++) {
 			if (!test_bit(vector, used_vectors) &&
-			    IS_ERR_OR_NULL(per_cpu(vector_irq, cpu)[vector]))
-			    count++;
+			    IS_ERR_OR_NULL(per_cpu(vector_irq, cpu)[vector])) {
+				if (++count == this_count)
+					return 0;
+			}
 		}
 	}
 
@@ -460,78 +484,11 @@ int check_irq_vectors_for_cpu_disable(void)
 void fixup_irqs(void)
 {
 	unsigned int irq;
-	static int warned;
 	struct irq_desc *desc;
 	struct irq_data *data;
 	struct irq_chip *chip;
-	int ret;
-	static DECLARE_BITMAP(irqs_used, NR_IRQS);
 
-	for_each_irq_desc(irq, desc) {
-		int break_affinity = 0;
-		int set_affinity = 1;
-		const struct cpumask *affinity;
-
-		if (!desc)
-			continue;
-		if (irq == 2)
-			continue;
-
-		/* interrupt's are disabled at this point */
-		raw_spin_lock(&desc->lock);
-
-		data = irq_desc_get_irq_data(desc);
-		affinity = irq_data_get_affinity_mask(data);
-		if (!irq_has_action(irq) || irqd_is_per_cpu(data) ||
-		    cpumask_subset(affinity, cpu_online_mask)) {
-			raw_spin_unlock(&desc->lock);
-			continue;
-		}
-
-		if (cpumask_test_cpu(smp_processor_id(), affinity))
-			__set_bit(irq, irqs_used);
-
-		if (cpumask_any_and(affinity, cpu_online_mask) >= nr_cpu_ids) {
-			break_affinity = 1;
-			affinity = cpu_online_mask;
-		}
-
-		chip = irq_data_get_irq_chip(data);
-		/*
-		 * The interrupt descriptor might have been cleaned up
-		 * already, but it is not yet removed from the radix tree
-		 */
-		if (!chip) {
-			raw_spin_unlock(&desc->lock);
-			continue;
-		}
-
-		if (!irqd_can_move_in_process_context(data) && chip->irq_mask)
-			chip->irq_mask(data);
-
-		if (chip->irq_set_affinity) {
-			ret = chip->irq_set_affinity(data, affinity, true);
-			if (ret == -ENOSPC)
-				pr_crit("IRQ %d set affinity failed because there are no available vectors.  The device assigned to this IRQ is unstable.\n", irq);
-		} else if (data->chip != &no_irq_chip && !(warned++))
-			set_affinity = 0;
-
-		/*
-		 * We unmask if the irq was not marked masked by the
-		 * core code. That respects the lazy irq disable
-		 * behaviour.
-		 */
-		if (!irqd_can_move_in_process_context(data) &&
-		    !irqd_irq_masked(data) && chip->irq_unmask)
-			chip->irq_unmask(data);
-
-		raw_spin_unlock(&desc->lock);
-
-		if (break_affinity && set_affinity)
-			/*pr_notice("Broke affinity for irq %i\n", irq)*/;
-		else if (!set_affinity)
-			pr_notice("Cannot set affinity for irq %i\n", irq);
-	}
+	irq_migrate_all_off_this_cpu();
 
 	/*
 	 * We can remove mdelay() and then send spuriuous interrupts to
@@ -550,21 +507,25 @@ void fixup_irqs(void)
 	 * nothing else will touch it.
 	 */
 	for_each_irq_desc(irq, desc) {
-		if (!__test_and_clear_bit(irq, irqs_used))
+		const struct cpumask *affinity;
+
+		if (irq == 2)
 			continue;
 
-		if (xen_test_irq_pending(irq)) {
-			desc = irq_to_desc(irq);
-			raw_spin_lock(&desc->lock);
-			data = irq_desc_get_irq_data(desc);
+		/* interrupt's are disabled at this point */
+		raw_spin_lock(&desc->lock);
+
+		data = irq_desc_get_irq_data(desc);
+		affinity = irq_data_get_affinity_mask(data);
+		if (irq_has_action(irq) && !irqd_is_per_cpu(data) &&
+		    cpumask_test_cpu(smp_processor_id(), affinity) &&
+		    xen_test_irq_pending(irq)) {
 			chip = irq_data_get_irq_chip(data);
 			if (chip->irq_retrigger)
 				chip->irq_retrigger(data);
-			raw_spin_unlock(&desc->lock);
 		}
-#ifndef CONFIG_XEN
-		__this_cpu_write(vector_irq[vector], -1);
-#endif
+
+		raw_spin_unlock(&desc->lock);
 	}
 }
 #endif

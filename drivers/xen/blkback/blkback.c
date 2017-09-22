@@ -302,22 +302,22 @@ static void drain_io(blkif_t *blkif)
 }
 
 /******************************************************************
- * COMPLETION CALLBACK -- Called as bh->b_end_io()
+ * COMPLETION CALLBACK
  */
 
-static void __end_block_io_op(pending_req_t *pending_req, int error)
+static void __end_block_io_op(pending_req_t *pending_req, blk_status_t error)
 {
 	blkif_t *blkif = pending_req->blkif;
 	int status = BLKIF_RSP_OKAY;
 
 	/* An error fails the entire request. */
 	if ((pending_req->operation == BLKIF_OP_WRITE_BARRIER) &&
-	    (error == -EOPNOTSUPP)) {
+	    (error == BLK_STS_NOTSUPP)) {
 		DPRINTK("blkback: write barrier op failed, not supported\n");
 		blkback_barrier(XBT_NIL, blkif->be, 0);
 		status = BLKIF_RSP_EOPNOTSUPP;
 	} else if ((pending_req->operation == BLKIF_OP_FLUSH_DISKCACHE) &&
-		   (error == -EOPNOTSUPP)) {
+		   (error == BLK_STS_NOTSUPP)) {
 		DPRINTK("blkback: flush diskcache op failed, not supported\n");
 		blkback_flush_diskcache(XBT_NIL, blkif->be, 0);
 		status = BLKIF_RSP_EOPNOTSUPP;
@@ -341,7 +341,7 @@ static void __end_block_io_op(pending_req_t *pending_req, int error)
 
 static void end_block_io_op(struct bio *bio)
 {
-	__end_block_io_op(bio->bi_private, bio->bi_error);
+	__end_block_io_op(bio->bi_private, bio->bi_status);
 	bio_put(bio);
 }
 
@@ -775,7 +775,7 @@ static void _dispatch_rw_block_io(blkif_t *blkif,
 	for (i = 0; i < nbio; ++i)
 		bio_put(seg[i].bio);
 	atomic_set(&pending_req->pendcnt, 1);
-	__end_block_io_op(pending_req, -EINVAL);
+	__end_block_io_op(pending_req, BLK_STS_RESOURCE);
 	msleep(1); /* back off a bit */
 	return;
 }
@@ -790,33 +790,35 @@ static void _dispatch_rw_block_io(blkif_t *blkif,
 static void make_response(blkif_t *blkif, u64 id,
 			  unsigned short op, int st)
 {
-	blkif_response_t  resp;
+	blkif_response_t  *resp;
 	unsigned long     flags;
 	blkif_back_rings_t *blk_rings = &blkif->blk_rings;
 	int notify;
-
-	resp.id        = id;
-	resp.operation = op;
-	resp.status    = st;
 
 	spin_lock_irqsave(&blkif->blk_ring_lock, flags);
 	/* Place on the response ring for the relevant domain. */
 	switch (blkif->blk_protocol) {
 	case BLKIF_PROTOCOL_NATIVE:
-		memcpy(RING_GET_RESPONSE(&blk_rings->native, blk_rings->native.rsp_prod_pvt),
-		       &resp, sizeof(resp));
+		resp = RING_GET_RESPONSE(&blk_rings->native,
+					 blk_rings->native.rsp_prod_pvt);
 		break;
 	case BLKIF_PROTOCOL_X86_32:
-		memcpy(RING_GET_RESPONSE(&blk_rings->x86_32, blk_rings->x86_32.rsp_prod_pvt),
-		       &resp, sizeof(resp));
+		resp = RING_GET_RESPONSE(&blk_rings->x86_32,
+					 blk_rings->x86_32.rsp_prod_pvt);
 		break;
 	case BLKIF_PROTOCOL_X86_64:
-		memcpy(RING_GET_RESPONSE(&blk_rings->x86_64, blk_rings->x86_64.rsp_prod_pvt),
-		       &resp, sizeof(resp));
+		resp = RING_GET_RESPONSE(&blk_rings->x86_64,
+					 blk_rings->x86_64.rsp_prod_pvt);
 		break;
 	default:
 		BUG();
+		return;
 	}
+
+	resp->id        = id;
+	resp->operation = op;
+	resp->status    = st;
+
 	blk_rings->common.rsp_prod_pvt++;
 	RING_PUSH_RESPONSES_AND_CHECK_NOTIFY(&blk_rings->common, notify);
 	spin_unlock_irqrestore(&blkif->blk_ring_lock, flags);

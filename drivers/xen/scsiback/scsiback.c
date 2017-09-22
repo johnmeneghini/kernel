@@ -214,7 +214,7 @@ static void scsiback_print_status(char *sense_buffer, int errors,
 }
 
 
-static void scsiback_cmd_done(struct request *req, int uptodate)
+static void scsiback_cmd_done(struct request *req, blk_status_t status)
 {
 	pending_req_t *pending_req = req->end_io_data;
 	unsigned char *sense_buffer;
@@ -223,7 +223,7 @@ static void scsiback_cmd_done(struct request *req, int uptodate)
 
 	sense_buffer = scsi_req(req)->sense;
 	resid        = blk_rq_bytes(req);
-	errors       = req->errors;
+	errors       = scsi_req(req)->result;
 
 	if (errors && log_print_stat)
 		scsiback_print_status(sense_buffer, errors, pending_req);
@@ -467,7 +467,6 @@ int scsiback_cmd_exec(pending_req_t *pending_req)
 		return err;
 	}
 
-	scsi_req_init(rq);
 	scsi_req(rq)->cmd_len = cmd_len;
 	memcpy(scsi_req(rq)->cmd, pending_req->cmnd, cmd_len);
 
@@ -476,7 +475,7 @@ int scsiback_cmd_exec(pending_req_t *pending_req)
 	scsi_req(rq)->sense_len = 0;
 
 	/* not allowed to retry in backend.                   */
-	rq->retries   = 0;
+	scsi_req(rq)->retries = 0;
 	rq->timeout   = timeout;
 	rq->end_io_data = pending_req;
 

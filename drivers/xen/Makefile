@@ -23,8 +23,6 @@ nostackp := $(call cc-option, -fno-stack-protector)
 ifeq ($(CONFIG_PARAVIRT_XEN),y)
 CFLAGS_features.o			:= $(nostackp)
 endif
-CFLAGS_efi.o				+= -fshort-wchar
-LDFLAGS					+= $(call ld-option, --no-wchar-size-warning)
 
 priv-$(CONFIG_USB_SUPPORT)		:= dbgp.o
 priv-$(CONFIG_PCI)			+= pci.o

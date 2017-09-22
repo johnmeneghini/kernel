@@ -121,7 +121,7 @@ static bool smp_no_nmi_ipi = false;
 void xen_smp_send_reschedule(int cpu)
 {
 	if (unlikely(cpu_is_offline(cpu))) {
-		WARN_ON(1);
+		WARN(1, "sched: Unexpected reschedule of offline CPU#%d!\n", cpu);
 		return;
 	}
 	xen_send_IPI_single(cpu, RESCHEDULE_VECTOR);

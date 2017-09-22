@@ -25,7 +25,7 @@
 
 #include <linux/interrupt.h>
 #include <asm/acpi.h>
-#include <asm/e820.h>
+#include <asm/e820/api.h>
 
 static int xen_phys_pkg_id(int cpuid_apic, int index_msb)
 {

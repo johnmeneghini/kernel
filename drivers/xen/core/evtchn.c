@@ -355,6 +355,32 @@ void __init init_IRQ(void)
 /* Xen will never allocate port zero for any purpose. */
 #define VALID_EVTCHN(chn)	((chn) != 0)
 
+void xen_rebind_evtchn_to_cpu(evtchn_port_t chn, unsigned int cpu)
+{
+	int irq;
+	bool masked;
+	struct evtchn_bind_vcpu ebv = { .port = chn, .vcpu = cpu };
+
+	if (!VALID_EVTCHN(chn) || (irq = evtchn_to_irq[chn]) < 0)
+		return;
+
+	switch (type_from_irq(irq)) {
+	case IRQT_LOCAL_PORT:
+	case IRQT_CALLER_PORT:
+		break;
+	default:
+		return;
+	}
+
+	masked = sync_test_and_set_bit(chn,
+				       HYPERVISOR_shared_info->evtchn_mask);
+	if (!HYPERVISOR_event_channel_op(EVTCHNOP_bind_vcpu, &ebv))
+		_bind_evtchn_to_cpu(chn, cpu, NULL, NULL);
+	if (!masked)
+		unmask_evtchn(chn);
+}
+EXPORT_SYMBOL_GPL(xen_rebind_evtchn_to_cpu);
+
 /*
  * Force a proper event-channel callback from Xen after clearing the
  * callback mask. We do this in a very simple manner, by making a call
@@ -1887,6 +1913,8 @@ static const struct irq_domain_ops xen_irq_domain_ops = {
 	.free	= xen_free_irqs,
 };
 #endif
+
+void irq_force_complete_move(struct irq_desc *desc) {}
 
 int __init arch_early_irq_init(void)
 {

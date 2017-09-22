@@ -16,6 +16,7 @@
  */
 
 #include <linux/init.h>
+#include <linux/mm.h>
 #include <linux/notifier.h>
 #include <linux/smp.h>
 #include <linux/oprofile.h>

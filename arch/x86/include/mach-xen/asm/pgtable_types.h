@@ -254,7 +254,11 @@ enum page_cache_mode {
 #include <linux/types.h>
 
 /* Extracts the PFN from a (pte|pmd|pud|pgd)val_t of a 4KB page */
+#ifdef CONFIG_X86_64
+#define PTE_PFN_MASK		((signed long)PAGE_MASK & (((pteval_t)1 << 52) - 1))
+#else
 #define PTE_PFN_MASK		((pteval_t)PHYSICAL_PAGE_MASK)
+#endif
 
 /*
  *  Extracts the flags from a (pte|pmd|pud|pgd)val_t
@@ -295,9 +299,36 @@ static inline pgdval_t pgd_flags(pgd_t pgd)
 	return __pgd_val(pgd) & PTE_FLAGS_MASK;
 }
 
-#if CONFIG_PGTABLE_LEVELS > 3
-#include <asm-generic/5level-fixup.h>
+#if CONFIG_PGTABLE_LEVELS > 4
+typedef struct { p4dval_t p4d; } p4d_t;
 
+#define __p4d_ma(x) ((p4d_t) { (x) } )
+static inline p4d_t xen_make_p4d(pudval_t val)
+{
+	if (likely(val & _PAGE_PRESENT))
+		val = pte_phys_to_machine(val);
+	return (p4d_t) { val };
+}
+
+#define __p4d_val(x) ((x).p4d)
+static inline p4dval_t xen_p4d_val(p4d_t p4d)
+{
+	p4dval_t ret = __p4d_val(p4d);
+	if (likely(ret & _PAGE_PRESENT))
+		ret = pte_machine_to_phys(ret);
+	return ret;
+}
+#else
+#include <asm-generic/pgtable-nop4d.h>
+
+#define __p4d_val(x) __pgd_val((x).pgd)
+static inline p4dval_t xen_p4d_val(p4d_t p4d)
+{
+	return xen_pgd_val(p4d.pgd);
+}
+#endif
+
+#if CONFIG_PGTABLE_LEVELS > 3
 typedef struct { pudval_t pud; } pud_t;
 
 #define __pud_ma(x) ((pud_t) { (x) } )
@@ -317,13 +348,12 @@ static inline pudval_t xen_pud_val(pud_t pud)
 	return ret;
 }
 #else
-#define __ARCH_USE_5LEVEL_HACK
 #include <asm-generic/pgtable-nopud.h>
 
-#define __pud_val(x) __pgd_val((x).pgd)
+#define __pud_val(x) __p4d_val((x).p4d)
 static inline pudval_t xen_pud_val(pud_t pud)
 {
-	return xen_pgd_val(pud.pgd);
+	return xen_pgd_val(pud.p4d.pgd);
 }
 #endif
 
@@ -352,16 +382,31 @@ static inline pmdval_t xen_pmd_val(pmd_t pmd)
 	return ret;
 }
 #else
-#define __ARCH_USE_5LEVEL_HACK
 #include <asm-generic/pgtable-nopmd.h>
 
-#define __pmd_ma(x) ((pmd_t) { .pud.pgd = __pgd_ma(x) } )
-#define __pmd_val(x) __pgd_val((x).pud.pgd)
+#define __pmd_ma(x) ((pmd_t) { .pud.p4d.pgd = __pgd_ma(x) } )
+#define __pmd_val(x) __pgd_val((x).pud.p4d.pgd)
 static inline pmdval_t xen_pmd_val(pmd_t pmd)
 {
-	return xen_pgd_val(pmd.pud.pgd);
+	return xen_pgd_val(pmd.pud.p4d.pgd);
 }
 #endif
+
+static inline p4dval_t p4d_pfn_mask(p4d_t p4d)
+{
+	/* No 512 GiB huge pages yet */
+	return PTE_PFN_MASK;
+}
+
+static inline p4dval_t p4d_flags_mask(p4d_t p4d)
+{
+	return ~p4d_pfn_mask(p4d);
+}
+
+static inline p4dval_t p4d_flags(p4d_t p4d)
+{
+	return __p4d_val(p4d) & p4d_flags_mask(p4d);
+}
 
 static inline pudval_t pud_pfn_mask(pud_t pud)
 {
@@ -511,6 +556,7 @@ enum pg_level {
 	PG_LEVEL_4K,
 	PG_LEVEL_2M,
 	PG_LEVEL_1G,
+	PG_LEVEL_512G,
 	PG_LEVEL_NUM
 };
 

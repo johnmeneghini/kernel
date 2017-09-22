@@ -21,7 +21,7 @@
 #include <linux/fs.h>
 #include <linux/miscdevice.h>
 #include <linux/module.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <xen/public/iomulti.h>
 
 struct pci_iomul_data {

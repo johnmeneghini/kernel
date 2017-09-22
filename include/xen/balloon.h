@@ -99,4 +99,12 @@ static inline int register_xen_selfballooning(struct device *dev)
 }
 #endif
 
+#ifdef CONFIG_XEN_BALLOON
+void xen_balloon_init(void);
+#else
+static inline void xen_balloon_init(void)
+{
+}
+#endif
+
 #endif /* __XEN_BALLOON_H__ */

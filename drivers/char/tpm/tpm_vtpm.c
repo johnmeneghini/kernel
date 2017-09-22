@@ -14,7 +14,6 @@
  *
  */
 
-#include <asm/uaccess.h>
 #include <linux/list.h>
 #include <linux/slab.h>
 #include <linux/device.h>

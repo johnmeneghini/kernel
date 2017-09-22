@@ -72,7 +72,7 @@ static inline void xen_write_cr0(unsigned long val)
 #define xen_read_cr2() vcpu_info_read(arch.cr2)
 #define xen_write_cr2(val) vcpu_info_write(arch.cr2, val)
 
-static inline unsigned long xen_read_cr3(void)
+static inline unsigned long __xen_read_cr3(void)
 {
 	unsigned long val;
 	asm volatile("mov %%cr3,%0\n\t" : "=r" (val), "=m" (__force_order));
@@ -183,9 +183,13 @@ static inline void write_cr2(unsigned long x)
 	xen_write_cr2(x);
 }
 
-static inline unsigned long read_cr3(void)
+/*
+ * Careful!  CR3 contains more than just an address.  You probably want
+ * read_cr3_pa() instead.
+ */
+static inline unsigned long __read_cr3(void)
 {
-	return xen_read_cr3();
+	return __xen_read_cr3();
 }
 
 static inline void write_cr3(unsigned long x)

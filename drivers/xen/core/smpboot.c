@@ -177,7 +177,7 @@ static void cpu_initialize_context(unsigned int cpu, unsigned long sp0)
 
 	smp_trap_init(ctxt.trap_ctxt);
 
-	ctxt.gdt_frames[0] = arbitrary_virt_to_mfn(get_cpu_gdt_table(cpu));
+	ctxt.gdt_frames[0] = arbitrary_virt_to_mfn(get_cpu_gdt_rw(cpu));
 	ctxt.gdt_ents = GDT_SIZE / 8;
 
 	ctxt.user_regs.cs = __KERNEL_CS;
@@ -199,7 +199,7 @@ static void cpu_initialize_context(unsigned int cpu, unsigned long sp0)
 #else /* __x86_64__ */
 	ctxt.syscall_callback_eip  = (unsigned long)entry_SYSCALL_64;
 
-	ctxt.ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(init_level4_pgt));
+	ctxt.ctrlreg[3] = xen_pfn_to_cr3(virt_to_mfn(init_top_pgt));
 
 	ctxt.gs_base_kernel = per_cpu_offset(cpu);
 #endif
@@ -241,7 +241,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
 		if (cpu == 0)
 			continue;
 
-		gdt_addr = get_cpu_gdt_table(cpu);
+		gdt_addr = get_cpu_gdt_rw(cpu);
 		make_page_readonly(gdt_addr, XENFEAT_writable_descriptor_tables);
 
 		apicid = cpu;
@@ -366,10 +366,10 @@ int __cpu_up(unsigned int cpu, struct task_struct *idle)
 		/* Wait 5s total for a response. */
 		unsigned long timeout = jiffies + 5 * HZ;
 
-		while ((!cpu_online(cpu) || !cpu_active(cpu)) &&
-			time_before_eq(jiffies, timeout))
+		while (cpu_report_state(cpu) != CPU_ONLINE &&
+		       time_before_eq(jiffies, timeout))
 			HYPERVISOR_yield();
-		if (!cpu_online(cpu) || !cpu_active(cpu)) {
+		if (cpu_report_state(cpu) != CPU_ONLINE) {
 			VOID(HYPERVISOR_vcpu_op(VCPUOP_down, cpu, NULL));
 			rc = -ETIMEDOUT;
 		}
