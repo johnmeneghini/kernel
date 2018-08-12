@@ -152,11 +152,18 @@ int
 qla24xx_disable_vp(scsi_qla_host_t *vha)
 {
 	unsigned long flags;
-	int ret;
+	int ret = QLA_SUCCESS;
+	fc_port_t *fcport;
 
-	ret = qla24xx_control_vp(vha, VCE_COMMAND_DISABLE_VPS_LOGO_ALL);
+	if (vha->hw->flags.fw_started)
+		ret = qla24xx_control_vp(vha, VCE_COMMAND_DISABLE_VPS_LOGO_ALL);
+
 	atomic_set(&vha->loop_state, LOOP_DOWN);
 	atomic_set(&vha->loop_down_timer, LOOP_DOWN_TIME);
+	list_for_each_entry(fcport, &vha->vp_fcports, list)
+		fcport->logout_on_delete = 0;
+
+	qla2x00_mark_all_devices_lost(vha, 0);
 
 	/* Remove port id from vp target map */
 	spin_lock_irqsave(&vha->hw->hardware_lock, flags);
@@ -929,8 +936,8 @@ int qla24xx_control_vp(scsi_qla_host_t *vha, int cmd)
 	sp->type = SRB_CTRL_VP;
 	sp->name = "ctrl_vp";
 	sp->done = qla_ctrlvp_sp_done;
-	qla2x00_init_timer(sp, qla2x00_get_async_timeout(vha) + 2);
 	sp->u.iocb_cmd.timeout = qla2x00_async_iocb_timeout;
+	qla2x00_init_timer(sp, qla2x00_get_async_timeout(vha) + 2);
 	sp->u.iocb_cmd.u.ctrlvp.cmd = cmd;
 	sp->u.iocb_cmd.u.ctrlvp.vp_index = vp_index;
 
