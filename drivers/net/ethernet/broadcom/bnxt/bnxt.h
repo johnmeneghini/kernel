@@ -542,7 +542,7 @@ struct rx_tpa_end_cmp_ext {
 	(HWRM_SHORT_TIMEOUT_COUNTER * HWRM_SHORT_MIN_TIMEOUT +		\
 	 ((n) - HWRM_SHORT_TIMEOUT_COUNTER) * HWRM_MIN_TIMEOUT))
 
-#define HWRM_VALID_BIT_DELAY_USEC	20
+#define HWRM_VALID_BIT_DELAY_USEC	150
 
 #define BNXT_RX_EVENT	1
 #define BNXT_AGG_EVENT	2
@@ -1456,8 +1456,7 @@ int bnxt_hwrm_set_coal(struct bnxt *);
 unsigned int bnxt_get_max_func_stat_ctxs(struct bnxt *bp);
 void bnxt_set_max_func_stat_ctxs(struct bnxt *bp, unsigned int max);
 unsigned int bnxt_get_max_func_cp_rings(struct bnxt *bp);
-void bnxt_set_max_func_cp_rings(struct bnxt *bp, unsigned int max);
-unsigned int bnxt_get_max_func_irqs(struct bnxt *bp);
+unsigned int bnxt_get_max_func_cp_rings_for_en(struct bnxt *bp);
 int bnxt_get_avail_msix(struct bnxt *bp, int num);
 int bnxt_reserve_rings(struct bnxt *bp);
 void bnxt_tx_disable(struct bnxt *bp);

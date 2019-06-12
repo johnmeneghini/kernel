@@ -6,6 +6,7 @@
  * GPL LICENSE SUMMARY
  *
  * Copyright(c) 2017 Intel Deutschland GmbH
+ * Copyright(c) 2018 - 2019 Intel Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of version 2 of the GNU General Public License as
@@ -19,6 +20,7 @@
  * BSD LICENSE
  *
  * Copyright(c) 2017 Intel Deutschland GmbH
+ * Copyright(c) 2018 - 2019 Intel Corporation
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -414,7 +416,12 @@ struct iwl_tfh_tfd *iwl_pcie_gen2_build_tfd(struct iwl_trans *trans,
 
 	hdr_len = ieee80211_hdrlen(hdr->frame_control);
 
-	if (amsdu) {
+	/*
+	 * Only build A-MSDUs here if doing so by GSO, otherwise it may be
+	 * an A-MSDU for other reasons, e.g. NAN or an A-MSDU having been
+	 * built in the higher layers already.
+	 */
+	if (amsdu && skb_shinfo(skb)->gso_size) {
 		if (iwl_pcie_gen2_build_amsdu(trans, skb, tfd,
 					      tb1_len + IWL_FIRST_TB_SIZE,
 					      hdr_len, dev_cmd))
@@ -455,6 +462,8 @@ struct iwl_tfh_tfd *iwl_pcie_gen2_build_tfd(struct iwl_trans *trans,
 			goto out_err;
 		tb_idx = iwl_pcie_gen2_set_tb(trans, tfd, tb_phys,
 					      skb_frag_size(frag));
+		if (tb_idx < 0)
+			goto out_err;
 
 		out_meta->tbs |= BIT(tb_idx);
 	}
@@ -842,9 +851,7 @@ static int iwl_pcie_gen2_send_hcmd_sync(struct iwl_trans *trans,
 			       cmd_str);
 		ret = -ETIMEDOUT;
 
-		iwl_force_nmi(trans);
-		iwl_trans_fw_error(trans);
-
+		iwl_trans_sync_nmi(trans);
 		goto cancel;
 	}
 
@@ -1099,8 +1106,7 @@ int iwl_trans_pcie_dyn_txq_alloc(struct iwl_trans *trans,
 	/* Place first TFD at index corresponding to start sequence number */
 	txq->read_ptr = wr_ptr;
 	txq->write_ptr = wr_ptr;
-	iwl_write_direct32(trans, HBUS_TARG_WRPTR,
-			   (txq->write_ptr) | (qid << 16));
+
 	IWL_DEBUG_TX_QUEUES(trans, "Activate queue %d\n", qid);
 
 	iwl_free_resp(&hcmd);

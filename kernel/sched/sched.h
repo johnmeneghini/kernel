@@ -11,6 +11,7 @@
 #include <linux/sched/numa_balancing.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/cpufreq.h>
+#include <linux/sched/smt.h>
 #include <linux/sched/stat.h>
 #include <linux/sched/nohz.h>
 #include <linux/sched/debug.h>
@@ -263,7 +264,13 @@ struct cfs_bandwidth {
 	s64 hierarchical_quota;
 	u64 runtime_expires;
 
+#ifdef	__GENKSYMS__
 	int idle, period_active;
+#else
+	int expires_seq;
+	short idle;
+	short period_active;
+#endif
 	struct hrtimer period_timer, slack_timer;
 	struct list_head throttled_cfs_rq;
 
@@ -468,6 +475,9 @@ struct cfs_rq {
 
 #ifdef CONFIG_CFS_BANDWIDTH
 	int runtime_enabled;
+#ifndef __GENKSYMS__
+	int expires_seq;
+#endif
 	u64 runtime_expires;
 	s64 runtime_remaining;
 
@@ -647,6 +657,9 @@ struct rq {
 #ifdef CONFIG_NUMA_BALANCING
 	unsigned int nr_numa_running;
 	unsigned int nr_preferred_running;
+#ifndef __GENKSYMS__
+	unsigned int numa_migrate_on;
+#endif
 #endif
 	#define CPU_LOAD_IDX_MAX 5
 	unsigned long cpu_load[CPU_LOAD_IDX_MAX];
@@ -782,9 +795,6 @@ static inline int cpu_of(struct rq *rq)
 
 
 #ifdef CONFIG_SCHED_SMT
-
-extern struct static_key_false sched_smt_present;
-
 extern void __update_idle_core(struct rq *rq);
 
 static inline void update_idle_core(struct rq *rq)
@@ -947,7 +957,8 @@ enum numa_faults_stats {
 };
 extern void sched_setnuma(struct task_struct *p, int node);
 extern int migrate_task_to(struct task_struct *p, int cpu);
-extern int migrate_swap(struct task_struct *, struct task_struct *);
+extern int migrate_swap(struct task_struct *p, struct task_struct *t,
+			int cpu, int scpu);
 extern void init_numa_balancing(unsigned long clone_flags, struct task_struct *p);
 #else
 static inline void
@@ -1395,7 +1406,11 @@ struct sched_class {
 
 #ifdef CONFIG_SMP
 	int  (*select_task_rq)(struct task_struct *p, int task_cpu, int sd_flag, int flags);
+#ifndef __GENKSYMS__
+	void (*migrate_task_rq)(struct task_struct *p, int new_cpu);
+#else
 	void (*migrate_task_rq)(struct task_struct *p);
+#endif
 
 	void (*task_woken) (struct rq *this_rq, struct task_struct *task);
 

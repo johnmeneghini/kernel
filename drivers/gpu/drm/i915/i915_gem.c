@@ -1007,11 +1007,7 @@ i915_gem_shmem_pread(struct drm_i915_gem_object *obj,
 	offset = offset_in_page(args->offset);
 	for (idx = args->offset >> PAGE_SHIFT; remain; idx++) {
 		struct page *page = i915_gem_object_get_page(obj, idx);
-		int length;
-
-		length = remain;
-		if (offset + length > PAGE_SIZE)
-			length = PAGE_SIZE - offset;
+		unsigned int length = min_t(u64, remain, PAGE_SIZE - offset);
 
 		ret = shmem_pread(page, offset, length, user_data,
 				  page_to_phys(page) & obj_do_bit17_swizzling,
@@ -1457,11 +1453,7 @@ i915_gem_shmem_pwrite(struct drm_i915_gem_object *obj,
 	offset = offset_in_page(args->offset);
 	for (idx = args->offset >> PAGE_SHIFT; remain; idx++) {
 		struct page *page = i915_gem_object_get_page(obj, idx);
-		int length;
-
-		length = remain;
-		if (offset + length > PAGE_SIZE)
-			length = PAGE_SIZE - offset;
+		unsigned int length = min_t(u64, remain, PAGE_SIZE - offset);
 
 		ret = shmem_pwrite(page, offset, length, user_data,
 				   page_to_phys(page) & obj_do_bit17_swizzling,
@@ -1710,6 +1702,17 @@ i915_gem_sw_finish_ioctl(struct drm_device *dev, void *data,
 	return 0;
 }
 
+static inline bool
+__vma_matches(struct vm_area_struct *vma, struct file *filp,
+	      unsigned long addr, unsigned long size)
+{
+	if (vma->vm_file != filp)
+		return false;
+
+	return vma->vm_start == addr &&
+	       (vma->vm_end - vma->vm_start) == PAGE_ALIGN(size);
+}
+
 /**
  * i915_gem_mmap_ioctl - Maps the contents of an object, returning the address
  *			 it is mapped to.
@@ -1768,7 +1771,7 @@ i915_gem_mmap_ioctl(struct drm_device *dev, void *data,
 			return -EINTR;
 		}
 		vma = find_vma(mm, addr);
-		if (vma)
+		if (vma && __vma_matches(vma, obj->base.filp, addr, args->size))
 			vma->vm_page_prot =
 				pgprot_writecombine(vm_get_page_prot(vma->vm_flags));
 		else
@@ -2844,16 +2847,16 @@ static void i915_gem_context_mark_guilty(struct i915_gem_context *ctx)
 	score = atomic_add_return(CONTEXT_SCORE_GUILTY, &ctx->ban_score);
 	banned = score >= CONTEXT_SCORE_BAN_THRESHOLD;
 
-	DRM_DEBUG_DRIVER("context %s: guilty %d, score %u, ban %s\n",
-			 ctx->name, atomic_read(&ctx->guilty_count),
-			 score, yesno(banned && bannable));
-
 	/* Cool contexts don't accumulate client ban score */
 	if (!bannable)
 		return;
 
-	if (banned)
+	if (banned) {
+		DRM_DEBUG_DRIVER("context %s: guilty %d, score %u, banned\n",
+				 ctx->name, atomic_read(&ctx->guilty_count),
+				 score);
 		i915_gem_context_set_banned(ctx);
+	}
 
 	if (!IS_ERR_OR_NULL(ctx->file_priv))
 		i915_gem_client_mark_guilty(ctx->file_priv, ctx);

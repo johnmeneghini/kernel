@@ -89,6 +89,19 @@ static inline uint xlog_get_cycle(char *ptr)
 
 #define XLOG_UNMOUNT_TYPE	0x556e	/* Un for Unmount */
 
+/*
+ * Log item for unmount records.
+ *
+ * The unmount record used to have a string "Unmount filesystem--" in the
+ * data section where the "Un" was really a magic number (XLOG_UNMOUNT_TYPE).
+ * We just write the magic number now; see xfs_log_unmount_write.
+ */
+struct xfs_unmount_log_format {
+	uint16_t	magic;	/* XLOG_UNMOUNT_TYPE */
+	uint16_t	pad1;
+	uint32_t	pad2;	/* may as well make it 64 bits */
+};
+
 /* Region types for iovec's i_type */
 #define XLOG_REG_TYPE_BFORMAT		1
 #define XLOG_REG_TYPE_BCHUNK		2
@@ -274,7 +287,7 @@ typedef struct xfs_inode_log_format {
 	uint64_t		ilf_ino;	/* inode number */
 	union {
 		uint32_t	ilfu_rdev;	/* rdev value for dev inode*/
-		uuid_t		ilfu_uuid;	/* mount point value */
+		uint8_t		__pad[16];	/* unused */
 	} ilf_u;
 	int64_t			ilf_blkno;	/* blkno of inode buffer */
 	int32_t			ilf_len;	/* len of inode buffer */
@@ -295,7 +308,7 @@ struct xfs_inode_log_format_32 {
 	uint64_t		ilf_ino;	/* inode number */
 	union {
 		uint32_t	ilfu_rdev;	/* rdev value for dev inode*/
-		uuid_t		ilfu_uuid;	/* mount point value */
+		uint8_t		__pad[16];	/* unused */
 	} ilf_u;
 	int64_t			ilf_blkno;	/* blkno of inode buffer */
 	int32_t			ilf_len;	/* len of inode buffer */
@@ -311,7 +324,7 @@ struct xfs_inode_log_format_32 {
 #define	XFS_ILOG_DEXT	0x004	/* log i_df.if_extents */
 #define	XFS_ILOG_DBROOT	0x008	/* log i_df.i_broot */
 #define	XFS_ILOG_DEV	0x010	/* log the dev field */
-#define	XFS_ILOG_UUID	0x020	/* log the uuid field */
+#define	XFS_ILOG_UUID	0x020	/* added long ago, but never used */
 #define	XFS_ILOG_ADATA	0x040	/* log i_af.if_data */
 #define	XFS_ILOG_AEXT	0x080	/* log i_af.if_extents */
 #define	XFS_ILOG_ABROOT	0x100	/* log i_af.i_broot */
@@ -329,9 +342,9 @@ struct xfs_inode_log_format_32 {
 
 #define	XFS_ILOG_NONCORE	(XFS_ILOG_DDATA | XFS_ILOG_DEXT | \
 				 XFS_ILOG_DBROOT | XFS_ILOG_DEV | \
-				 XFS_ILOG_UUID | XFS_ILOG_ADATA | \
-				 XFS_ILOG_AEXT | XFS_ILOG_ABROOT | \
-				 XFS_ILOG_DOWNER | XFS_ILOG_AOWNER)
+				 XFS_ILOG_ADATA | XFS_ILOG_AEXT | \
+				 XFS_ILOG_ABROOT | XFS_ILOG_DOWNER | \
+				 XFS_ILOG_AOWNER)
 
 #define	XFS_ILOG_DFORK		(XFS_ILOG_DDATA | XFS_ILOG_DEXT | \
 				 XFS_ILOG_DBROOT)
@@ -341,10 +354,10 @@ struct xfs_inode_log_format_32 {
 
 #define	XFS_ILOG_ALL		(XFS_ILOG_CORE | XFS_ILOG_DDATA | \
 				 XFS_ILOG_DEXT | XFS_ILOG_DBROOT | \
-				 XFS_ILOG_DEV | XFS_ILOG_UUID | \
-				 XFS_ILOG_ADATA | XFS_ILOG_AEXT | \
-				 XFS_ILOG_ABROOT | XFS_ILOG_TIMESTAMP | \
-				 XFS_ILOG_DOWNER | XFS_ILOG_AOWNER)
+				 XFS_ILOG_DEV | XFS_ILOG_ADATA | \
+				 XFS_ILOG_AEXT | XFS_ILOG_ABROOT | \
+				 XFS_ILOG_TIMESTAMP | XFS_ILOG_DOWNER | \
+				 XFS_ILOG_AOWNER)
 
 static inline int xfs_ilog_fbroot(int w)
 {
@@ -429,6 +442,62 @@ static inline uint xfs_log_dinode_size(int version)
 		return sizeof(struct xfs_log_dinode);
 	return offsetof(struct xfs_log_dinode, di_next_unlinked);
 }
+
+/* This is to compensate for a regression introduced in 3.12.74-60.64.40 */
+struct xfs_icdinode_malformed {
+	uint16_t	di_magic;	/* inode magic # = XFS_DINODE_MAGIC */
+	uint16_t	di_mode;	/* mode and type of file */
+	int8_t		di_version;	/* inode version */
+	int8_t		di_format;	/* format of di_c data */
+	uint8_t		di_pad3[2];	/* unused in v2/3 inodes */
+	uint32_t	di_uid;		/* owner's user id */
+	uint32_t	di_gid;		/* owner's group id */
+	uint32_t	di_nlink;	/* number of links to file */
+	uint16_t	di_projid_lo;	/* lower part of owner's project id */
+	uint16_t	di_projid_hi;	/* higher part of owner's project id */
+	uint8_t		di_pad[6];	/* unused, zeroed space */
+	uint16_t	di_flushiter;	/* incremented on flush */
+	xfs_ictimestamp_t di_atime;	/* time last accessed */
+	xfs_ictimestamp_t di_mtime;	/* time last modified */
+	xfs_ictimestamp_t di_ctime;	/* time created/inode modified */
+	xfs_fsize_t	di_size;	/* number of bytes in file */
+	xfs_rfsblock_t	di_nblocks;	/* # of direct & btree blocks used */
+	xfs_extlen_t	di_extsize;	/* basic/minimum extent size for file */
+	xfs_extnum_t	di_nextents;	/* number of extents in data fork */
+	xfs_aextnum_t	di_anextents;	/* number of extents in attribute fork*/
+	uint8_t		di_forkoff;	/* attr fork offs, <<3 for 64b align */
+	int8_t		di_aformat;	/* format of attr fork's data */
+	uint32_t	di_dmevmask;	/* DMIG event mask */
+	atomic_t	di_dmstate;	/* DMIG state info */
+	uint16_t	di_flags;	/* random flags, XFS_DIFLAG_... */
+	uint32_t	di_gen;		/* generation number */
+
+	/* di_next_unlinked is the only non-core field in the old dinode */
+	xfs_agino_t	di_next_unlinked;/* agi unlinked list ptr */
+
+	/* start of the extended dinode, writable fields */
+	uint32_t	di_crc;		/* CRC of the inode */
+	uint64_t	di_changecount;	/* number of attribute changes */
+	xfs_lsn_t	di_lsn;		/* flush sequence */
+	uint64_t	di_flags2;	/* more random flags */
+	uint32_t	di_cowextsize;	/* basic cow extent size for file */
+	uint8_t		di_pad2[12];	/* more padding for future expansion */
+
+	/* fields only written to during inode creation */
+	xfs_ictimestamp_t di_crtime;	/* time created */
+	xfs_ino_t	di_ino;		/* inode number */
+	uuid_t		di_uuid;	/* UUID of the filesystem */
+
+	/* structure must be padded to 64 bit alignment */
+};
+
+static inline uint xfs_icdinode_size_malformed(int version)
+{
+	if (version == 3)
+		return sizeof(struct xfs_icdinode_malformed);
+	return offsetof(struct xfs_icdinode_malformed, di_next_unlinked);
+}
+
 
 /*
  * Buffer Log Format defintions

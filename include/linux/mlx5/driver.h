@@ -749,6 +749,10 @@ struct mlx5_pagefault {
 };
 
 struct mlx5_td {
+	/* protects tirs list changes while tirs refresh */
+#ifndef __GENKSYMS__
+	struct mutex     list_lock;
+#endif
 	struct list_head tirs_list;
 	u32              tdn;
 };
@@ -978,7 +982,7 @@ int mlx5_cmd_free_uar(struct mlx5_core_dev *dev, u32 uarn);
 void mlx5_health_cleanup(struct mlx5_core_dev *dev);
 int mlx5_health_init(struct mlx5_core_dev *dev);
 void mlx5_start_health_poll(struct mlx5_core_dev *dev);
-void mlx5_stop_health_poll(struct mlx5_core_dev *dev);
+void mlx5_stop_health_poll(struct mlx5_core_dev *dev, bool disable_health);
 void mlx5_drain_health_wq(struct mlx5_core_dev *dev);
 void mlx5_drain_health_recovery(struct mlx5_core_dev *dev);
 void mlx5_trigger_health_work(struct mlx5_core_dev *dev);

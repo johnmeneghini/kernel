@@ -235,8 +235,17 @@ struct nvme_ctrl {
 	struct timer_list anatt_timer;
 	struct work_struct ana_work;
 #endif
+	struct mutex scan_lock;
 #endif
 };
+
+#ifdef CONFIG_NVME_MULTIPATH
+enum nvme_iopolicy {
+	NVME_IOPOLICY_UNKNOWN,
+	NVME_IOPOLICY_NUMA,
+	NVME_IOPOLICY_RR,
+};
+#endif
 
 struct nvme_subsystem {
 	int			instance;
@@ -257,6 +266,11 @@ struct nvme_subsystem {
 	u8			cmic;
 	u16			vendor_id;
 	struct ida		ns_ida;
+#ifndef __GENKSYMS__
+#ifdef CONFIG_NVME_MULTIPATH
+	enum nvme_iopolicy	iopolicy;
+#endif
+#endif
 };
 
 /*
@@ -450,6 +464,7 @@ int nvme_get_log(struct nvme_ctrl *ctrl, u32 nsid, u8 log_page, u8 lsp,
 		void *log, size_t size, u64 offset);
 
 extern const struct attribute_group nvme_ns_id_attr_group;
+extern const struct attribute_group *nvme_ns_id_attr_groups[];
 extern const struct block_device_operations nvme_ns_head_ops;
 
 #ifdef CONFIG_NVME_MULTIPATH
@@ -485,6 +500,7 @@ static inline void nvme_mpath_check_last_path(struct nvme_ns *ns)
 
 extern struct device_attribute dev_attr_ana_grpid;
 extern struct device_attribute dev_attr_ana_state;
+extern struct device_attribute subsys_attr_iopolicy;
 
 #else
 static inline bool nvme_ctrl_use_ana(struct nvme_ctrl *ctrl)

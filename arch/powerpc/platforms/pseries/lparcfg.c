@@ -370,10 +370,10 @@ static void parse_system_parameter_string(struct seq_file *m)
  */
 static int lparcfg_count_active_processors(void)
 {
-	struct device_node *cpus_dn = NULL;
+	struct device_node *cpus_dn;
 	int count = 0;
 
-	while ((cpus_dn = of_find_node_by_type(cpus_dn, "cpu"))) {
+	for_each_node_by_type(cpus_dn, "cpu") {
 #ifdef LPARCFG_DEBUG
 		printk(KERN_ERR "cpus_dn %p\n", cpus_dn);
 #endif
@@ -461,6 +461,7 @@ static int pseries_lparcfg_data(struct seq_file *m, void *v)
 		splpar_dispatch_data(m);
 
 		seq_printf(m, "purr=%ld\n", get_purr());
+		seq_printf(m, "tbr=%ld\n", mftb());
 	} else {		/* non SPLPAR case */
 
 		seq_printf(m, "system_active_processors=%d\n",

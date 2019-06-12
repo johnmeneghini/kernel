@@ -437,7 +437,8 @@ void iwl_mvm_rx_rx_mpdu(struct iwl_mvm *mvm, struct napi_struct *napi,
 		rx_status->bw = RATE_INFO_BW_160;
 		break;
 	}
-	if (rate_n_flags & RATE_MCS_SGI_MSK)
+	if (!(rate_n_flags & RATE_MCS_CCK_MSK) &&
+	    rate_n_flags & RATE_MCS_SGI_MSK)
 		rx_status->enc_flags |= RX_ENC_FLAG_SHORT_GI;
 	if (rate_n_flags & RATE_HT_MCS_GF_MSK)
 		rx_status->enc_flags |= RX_ENC_FLAG_HT_GF;
@@ -531,8 +532,8 @@ static void iwl_mvm_stat_iterator(void *_data, u8 *mac,
 	if (data->general) {
 		u16 vif_id = mvmvif->id;
 
-		if (iwl_mvm_is_cdb_supported(mvm)) {
-			struct mvm_statistics_general_cdb *general =
+		if (iwl_mvm_has_new_rx_stats_api(mvm)) {
+			struct mvm_statistics_general *general =
 				data->general;
 
 			mvmvif->beacon_stats.num_beacons =
@@ -658,7 +659,7 @@ void iwl_mvm_handle_rx_statistics(struct iwl_mvm *mvm,
 		else
 			expected_size = sizeof(struct iwl_notif_statistics_v10);
 	} else {
-		expected_size = sizeof(struct iwl_notif_statistics_cdb);
+		expected_size = sizeof(struct iwl_notif_statistics);
 	}
 
 	if (iwl_rx_packet_payload_len(pkt) != expected_size) {
@@ -689,7 +690,7 @@ void iwl_mvm_handle_rx_statistics(struct iwl_mvm *mvm,
 
 		flags = stats->flag;
 	} else {
-		struct iwl_notif_statistics_cdb *stats = (void *)&pkt->data;
+		struct iwl_notif_statistics *stats = (void *)&pkt->data;
 
 		data.mac_id = stats->rx.general.mac_id;
 		data.beacon_filter_average_energy =
@@ -728,7 +729,7 @@ void iwl_mvm_handle_rx_statistics(struct iwl_mvm *mvm,
 		bytes = (void *)&v11->load_stats.byte_count;
 		air_time = (void *)&v11->load_stats.air_time;
 	} else {
-		struct iwl_notif_statistics_cdb *stats = (void *)&pkt->data;
+		struct iwl_notif_statistics *stats = (void *)&pkt->data;
 
 		energy = (void *)&stats->load_stats.avg_energy;
 		bytes = (void *)&stats->load_stats.byte_count;

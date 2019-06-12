@@ -859,6 +859,8 @@ int bnxt_re_destroy_qp(struct ib_qp *ib_qp)
 				"Failed to destroy Shadow QP");
 			return rc;
 		}
+		bnxt_qplib_free_qp_res(&rdev->qplib_res,
+				       &rdev->qp1_sqp->qplib_qp);
 		mutex_lock(&rdev->qp_lock);
 		list_del(&rdev->qp1_sqp->list);
 		atomic_dec(&rdev->qp_count);
@@ -2714,6 +2716,7 @@ struct ib_cq *bnxt_re_create_cq(struct ib_device *ibdev,
 	nq->budget++;
 
 	atomic_inc(&rdev->cq_count);
+	spin_lock_init(&cq->cq_lock);
 
 	if (context) {
 		struct bnxt_re_cq_resp resp;

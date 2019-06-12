@@ -201,9 +201,9 @@ static void destroy_pagetable_page(struct mm_struct *mm)
 	/* drop all the pending references */
 	count = ((unsigned long)pte_frag & ~PAGE_MASK) >> PTE_FRAG_SIZE_SHIFT;
 	/* We allow PTE_FRAG_NR fragments from a PTE page */
-	if (page_ref_sub_and_test(page, PTE_FRAG_NR - count)) {
+	if (atomic_sub_and_test(PTE_FRAG_NR - count, &page->pt_frag_refcount)) {
 		pgtable_page_dtor(page);
-		free_unref_page(page);
+		__free_page(page);
 	}
 }
 
@@ -219,19 +219,34 @@ void destroy_context(struct mm_struct *mm)
 #ifdef CONFIG_SPAPR_TCE_IOMMU
 	WARN_ON_ONCE(!list_empty(&mm->context.iommu_group_mem_list));
 #endif
+	if (radix_enabled())
+		WARN_ON(process_tb[mm->context.id].prtb0 != 0);
+	else
+		subpage_prot_free(mm);
+	destroy_pagetable_page(mm);
+	__destroy_context(mm->context.id);
+	mm->context.id = MMU_NO_CONTEXT;
+}
+
+void arch_exit_mmap(struct mm_struct *mm)
+{
 	if (radix_enabled()) {
 		/*
 		 * Radix doesn't have a valid bit in the process table
 		 * entries. However we know that at least P9 implementation
 		 * will avoid caching an entry with an invalid RTS field,
 		 * and 0 is invalid. So this will do.
+		 *
+		 * This runs before the "fullmm" tlb flush in exit_mmap,
+		 * which does a RIC=2 tlbie to clear the process table
+		 * entry. See the "fullmm" comments in tlb-radix.c.
+		 *
+		 * No barrier required here after the store because
+		 * this process will do the invalidate, which starts with
+		 * ptesync.
 		 */
 		process_tb[mm->context.id].prtb0 = 0;
-	} else
-		subpage_prot_free(mm);
-	destroy_pagetable_page(mm);
-	__destroy_context(mm->context.id);
-	mm->context.id = MMU_NO_CONTEXT;
+	}
 }
 
 #ifdef CONFIG_PPC_RADIX_MMU

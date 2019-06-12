@@ -194,9 +194,19 @@ static void __exit r3964_exit(void)
 	}
 }
 
+static bool force_load;
+module_param(force_load, bool, 0);
+MODULE_PARM_DESC(force_load, "Force module load, despite CVE holes");
+
 static int __init r3964_init(void)
 {
 	int status;
+
+	if (!force_load) {
+		pr_err("Refusing to load r3964 due to holes in this line discipline (see bnc#1133188)!\n");
+		pr_err("You can still force-load the driver by passing force_load=1 module parameter\n");
+		return -EINVAL;
+	}
 
 	printk("r3964: Philips r3964 Driver $Revision: 1.10 $\n");
 
@@ -943,6 +953,12 @@ static int r3964_open(struct tty_struct *tty)
 {
 	struct r3964_info *pInfo;
 
+	if (!force_load) {
+		pr_err("Refusing to open r3964 due to holes in this line discipline (see bnc#1133188)!\n");
+		pr_err("You can still force-open the discipline by passing force_load=1 module parameter\n");
+		return -EINVAL;
+	}
+
 	TRACE_L("open");
 	TRACE_L("tty=%p, PID=%d, disc_data=%p",
 		tty, current->pid, tty->disc_data);
@@ -1080,7 +1096,7 @@ static ssize_t r3964_read(struct tty_struct *tty, struct file *file,
 		pMsg = remove_msg(pInfo, pClient);
 		if (pMsg == NULL) {
 			/* no messages available. */
-			if (file->f_flags & O_NONBLOCK) {
+			if (tty_io_nonblock(tty, file)) {
 				ret = -EAGAIN;
 				goto unlock;
 			}

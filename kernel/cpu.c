@@ -10,6 +10,7 @@
 #include <linux/sched/signal.h>
 #include <linux/sched/hotplug.h>
 #include <linux/sched/task.h>
+#include <linux/sched/smt.h>
 #include <linux/unistd.h>
 #include <linux/cpu.h>
 #include <linux/oom.h>
@@ -345,9 +346,17 @@ void cpu_hotplug_enable(void)
 EXPORT_SYMBOL_GPL(cpu_hotplug_enable);
 #endif	/* CONFIG_HOTPLUG_CPU */
 
+/*
+ * Architectures that need SMT-specific errata handling during SMT hotplug
+ * should override this.
+ */
+void __weak arch_smt_update(void) { }
+
 #ifdef CONFIG_HOTPLUG_SMT
 enum cpuhp_smt_control cpu_smt_control __read_mostly = CPU_SMT_ENABLED;
 EXPORT_SYMBOL_GPL(cpu_smt_control);
+
+static bool cpu_smt_available __read_mostly;
 
 void __init cpu_smt_disable(bool force)
 {
@@ -365,11 +374,25 @@ void __init cpu_smt_disable(bool force)
 
 /*
  * The decision whether SMT is supported can only be done after the full
- * CPU identification. Called from architecture code.
+ * CPU identification. Called from architecture code before non boot CPUs
+ * are brought up.
+ */
+void __init cpu_smt_check_topology_early(void)
+{
+	if (!topology_smt_supported())
+		cpu_smt_control = CPU_SMT_NOT_SUPPORTED;
+}
+
+/*
+ * If SMT was disabled by BIOS, detect it here, after the CPUs have been
+ * brought online. This ensures the smt/l1tf sysfs entries are consistent
+ * with reality. cpu_smt_available is set to true during the bringup of non
+ * boot CPUs when a SMT sibling is detected. Note, this may overwrite
+ * cpu_smt_control's previous setting.
  */
 void __init cpu_smt_check_topology(void)
 {
-	if (!topology_smt_supported())
+	if (!cpu_smt_available)
 		cpu_smt_control = CPU_SMT_NOT_SUPPORTED;
 }
 
@@ -382,10 +405,18 @@ early_param("nosmt", smt_cmdline_disable);
 
 static inline bool cpu_smt_allowed(unsigned int cpu)
 {
-	if (cpu_smt_control == CPU_SMT_ENABLED)
+	if (topology_is_primary_thread(cpu))
 		return true;
 
-	if (topology_is_primary_thread(cpu))
+	/*
+	 * If the CPU is not a 'primary' thread and the booted_once bit is
+	 * set then the processor has SMT support. Store this information
+	 * for the late check of SMT support in cpu_smt_check_topology().
+	 */
+	if (per_cpu(cpuhp_state, cpu).booted_once)
+		cpu_smt_available = true;
+
+	if (cpu_smt_control == CPU_SMT_ENABLED)
 		return true;
 
 	/*
@@ -985,6 +1016,7 @@ static int _cpu_up(unsigned int cpu, int tasks_frozen, enum cpuhp_state target)
 	ret = cpuhp_up_callbacks(cpu, st, target);
 out:
 	cpus_write_unlock();
+	arch_smt_update();
 	return ret;
 }
 
@@ -1929,15 +1961,6 @@ static const struct attribute_group cpuhp_smt_attr_group = {
 
 static int __init cpu_smt_state_init(void)
 {
-	/*
-	 * If SMT was disabled by BIOS, detect it here, after the CPUs have
-	 * been brought online.  This ensures the smt/l1tf sysfs entries are
-	 * consistent with reality.  Note this may overwrite cpu_smt_control's
-	 * previous setting.
-	 */
-	if (topology_max_smt_threads() == 1)
-		cpu_smt_control = CPU_SMT_NOT_SUPPORTED;
-
 	return sysfs_create_group(&cpu_subsys.dev_root->kobj,
 				  &cpuhp_smt_attr_group);
 }
@@ -2054,10 +2077,10 @@ void __init boot_cpu_init(void)
 /*
  * Must be called _AFTER_ setting up the per_cpu areas
  */
-void __init boot_cpu_state_init(void)
+void __init boot_cpu_hotplug_init(void)
 {
-	per_cpu_ptr(&cpuhp_state, smp_processor_id())->booted_once = true;
-	per_cpu_ptr(&cpuhp_state, smp_processor_id())->state = CPUHP_ONLINE;
+	this_cpu_write(cpuhp_state.booted_once, true);
+	this_cpu_write(cpuhp_state.state, CPUHP_ONLINE);
 }
 
 /* kabi */
@@ -2067,3 +2090,18 @@ static void get_online_cpus(void) { cpus_read_lock(); }
 static void put_online_cpus(void) { cpus_read_unlock(); }
 EXPORT_SYMBOL_GPL(get_online_cpus);
 EXPORT_SYMBOL_GPL(put_online_cpus);
+
+enum cpu_mitigations cpu_mitigations __ro_after_init = CPU_MITIGATIONS_AUTO;
+
+static int __init mitigations_parse_cmdline(char *arg)
+{
+	if (!strcmp(arg, "off"))
+		cpu_mitigations = CPU_MITIGATIONS_OFF;
+	else if (!strcmp(arg, "auto"))
+		cpu_mitigations = CPU_MITIGATIONS_AUTO;
+	else if (!strcmp(arg, "auto,nosmt"))
+		cpu_mitigations = CPU_MITIGATIONS_AUTO_NOSMT;
+
+	return 0;
+}
+early_param("mitigations", mitigations_parse_cmdline);

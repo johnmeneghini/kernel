@@ -100,6 +100,7 @@ enum {
 #define POWER9_MMCRA_IFM1		0x0000000040000000UL
 #define POWER9_MMCRA_IFM2		0x0000000080000000UL
 #define POWER9_MMCRA_IFM3		0x00000000C0000000UL
+#define POWER9_MMCRA_BHRB_MASK		0x00000000C0000000UL
 
 /* Nasty Power9 specific hack */
 #define PVR_POWER9_CUMULUS		0x00002000
@@ -175,8 +176,6 @@ CACHE_EVENT_ATTR(L1-icache-prefetches,		PM_IC_PREF_WRITE);
 CACHE_EVENT_ATTR(LLC-load-misses,		PM_DATA_FROM_L3MISS);
 CACHE_EVENT_ATTR(LLC-loads,			PM_DATA_FROM_L3);
 CACHE_EVENT_ATTR(LLC-prefetches,		PM_L3_PREF_ALL);
-CACHE_EVENT_ATTR(LLC-store-misses,		PM_L2_ST_MISS);
-CACHE_EVENT_ATTR(LLC-stores,			PM_L2_ST);
 CACHE_EVENT_ATTR(branch-load-misses,		PM_BR_MPRED_CMPL);
 CACHE_EVENT_ATTR(branch-loads,			PM_BR_CMPL);
 CACHE_EVENT_ATTR(dTLB-load-misses,		PM_DTLB_MISS);
@@ -201,8 +200,6 @@ static struct attribute *power9_events_attr[] = {
 	CACHE_EVENT_PTR(PM_DATA_FROM_L3MISS),
 	CACHE_EVENT_PTR(PM_DATA_FROM_L3),
 	CACHE_EVENT_PTR(PM_L3_PREF_ALL),
-	CACHE_EVENT_PTR(PM_L2_ST_MISS),
-	CACHE_EVENT_PTR(PM_L2_ST),
 	CACHE_EVENT_PTR(PM_BR_MPRED_CMPL),
 	CACHE_EVENT_PTR(PM_BR_CMPL),
 	CACHE_EVENT_PTR(PM_DTLB_MISS),
@@ -321,6 +318,8 @@ static u64 power9_bhrb_filter_map(u64 branch_sample_type)
 
 static void power9_config_bhrb(u64 pmu_bhrb_filter)
 {
+	pmu_bhrb_filter &= POWER9_MMCRA_BHRB_MASK;
+
 	/* Enable BHRB filter in PMU */
 	mtspr(SPRN_MMCRA, (mfspr(SPRN_MMCRA) | pmu_bhrb_filter));
 }
@@ -367,8 +366,8 @@ static int power9_cache_events[C(MAX)][C(OP_MAX)][C(RESULT_MAX)] = {
 			[ C(RESULT_MISS)   ] = PM_DATA_FROM_L3MISS,
 		},
 		[ C(OP_WRITE) ] = {
-			[ C(RESULT_ACCESS) ] = PM_L2_ST,
-			[ C(RESULT_MISS)   ] = PM_L2_ST_MISS,
+			[ C(RESULT_ACCESS) ] = 0,
+			[ C(RESULT_MISS)   ] = 0,
 		},
 		[ C(OP_PREFETCH) ] = {
 			[ C(RESULT_ACCESS) ] = PM_L3_PREF_ALL,

@@ -70,7 +70,7 @@ static int pnv_save_sprs_for_deep_states(void)
 	 * all cpus at boot. Get these reg values of current cpu and use the
 	 * same across all cpus.
 	 */
-	uint64_t lpcr_val = mfspr(SPRN_LPCR) & ~(u64)LPCR_PECE1;
+	uint64_t lpcr_val = mfspr(SPRN_LPCR);
 	uint64_t hid0_val = mfspr(SPRN_HID0);
 	uint64_t hid1_val = mfspr(SPRN_HID1);
 	uint64_t hid4_val = mfspr(SPRN_HID4);
@@ -79,7 +79,7 @@ static int pnv_save_sprs_for_deep_states(void)
 	uint64_t msr_val = MSR_IDLE;
 	uint64_t psscr_val = pnv_deepest_stop_psscr_val;
 
-	for_each_possible_cpu(cpu) {
+	for_each_present_cpu(cpu) {
 		uint64_t pir = get_hard_smp_processor_id(cpu);
 		uint64_t hsprg0_val = (uint64_t)&paca[cpu];
 
@@ -465,6 +465,21 @@ EXPORT_SYMBOL_GPL(pnv_power9_force_smt4_release);
 #endif /* CONFIG_KVM_BOOK3S_HV_POSSIBLE */
 
 #ifdef CONFIG_HOTPLUG_CPU
+
+void pnv_program_cpu_hotplug_lpcr(unsigned int cpu, u64 lpcr_val)
+{
+	u64 pir = get_hard_smp_processor_id(cpu);
+
+	mtspr(SPRN_LPCR, lpcr_val);
+
+	/*
+	 * Program the LPCR via stop-api only if the deepest stop state
+	 * can lose hypervisor context.
+	 */
+	if (supported_cpuidle_states & OPAL_PM_LOSE_FULL_CONTEXT)
+		opal_slw_set_reg(pir, SPRN_LPCR, lpcr_val);
+}
+
 /*
  * pnv_cpu_offline: A function that puts the CPU into the deepest
  * available platform idle state on a CPU-Offline.
@@ -780,7 +795,7 @@ static int __init pnv_init_idle_states(void)
 		int cpu;
 
 		pr_info("powernv: idle: Saving PACA pointers of all CPUs in their thread sibling PACA\n");
-		for_each_possible_cpu(cpu) {
+		for_each_present_cpu(cpu) {
 			int base_cpu = cpu_first_thread_sibling(cpu);
 			int idx = cpu_thread_in_core(cpu);
 			int i;

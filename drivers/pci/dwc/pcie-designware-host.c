@@ -307,7 +307,8 @@ int dw_pcie_host_init(struct pcie_port *pp)
 	resource_list_for_each_entry_safe(win, tmp, &res) {
 		switch (resource_type(win->res)) {
 		case IORESOURCE_IO:
-			ret = pci_remap_iospace(win->res, pp->io_base);
+			ret = devm_pci_remap_iospace(dev, win->res,
+						     pp->io_base);
 			if (ret) {
 				dev_warn(dev, "error %d: failed to map resource %pR\n",
 					 ret, win->res);
@@ -591,7 +592,7 @@ void dw_pcie_setup_rc(struct pcie_port *pp)
 	/* setup interrupt pins */
 	val = dw_pcie_readl_dbi(pci, PCI_INTERRUPT_LINE);
 	val &= 0xffff00ff;
-	val |= 0x00ff0100;
+	val |= 0x00000100;
 	dw_pcie_writel_dbi(pci, PCI_INTERRUPT_LINE, val);
 
 	/* setup bus numbers */

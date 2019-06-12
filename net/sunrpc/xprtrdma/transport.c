@@ -484,6 +484,12 @@ xprt_rdma_close(struct rpc_xprt *xprt)
 		xprt->reestablish_timeout = 0;
 	xprt_disconnect_done(xprt);
 	rpcrdma_ep_disconnect(ep, ia);
+
+	/* Prepare @xprt for the next connection by reinitializing
+	 * its credit grant to one (see RFC 8166, Section 3.3.3).
+	 */
+	atomic_set(&r_xprt->rx_buf.rb_credits, 1);
+	xprt->cwnd = RPC_CWNDSHIFT;
 }
 
 static void
@@ -686,7 +692,7 @@ xprt_rdma_free(struct rpc_task *task)
 
 	rpcrdma_remove_req(&r_xprt->rx_buf, req);
 	if (!list_empty(&req->rl_registered))
-		ia->ri_ops->ro_unmap_safe(r_xprt, req, !RPC_IS_ASYNC(task));
+		ia->ri_ops->ro_unmap_sync(r_xprt, &req->rl_registered);
 	rpcrdma_unmap_sges(ia, req);
 	rpcrdma_buffer_put(req);
 }

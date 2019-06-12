@@ -800,13 +800,21 @@ static void __blk_release_queue(struct work_struct *work)
 	if (test_bit(QUEUE_FLAG_POLL_STATS, &q->queue_flags))
 		blk_stat_remove_callback(q, q->poll_cb);
 	blk_stat_free_callback(q->poll_cb);
-	bdi_put(q->backing_dev_info);
-	blkcg_exit_queue(q);
 
-	if (q->elevator) {
-		ioc_clear_queue(q);
-		elevator_exit(q, q->elevator);
+	if (!blk_queue_dead(q)) {
+		/*
+		 * Last reference was dropped without having called
+		 * blk_cleanup_queue().
+		 */
+		WARN_ONCE(blk_queue_init_done(q),
+			  "request queue %p has been registered but blk_cleanup_queue() has not been called for that queue\n",
+			  q);
+		blk_exit_queue(q);
 	}
+
+	WARN(blk_queue_root_blkg(q),
+	     "request queue %p is being released but it has not yet been removed from the blkcg controller\n",
+	     q);
 
 	blk_free_queue_stats(q->stats);
 
@@ -931,10 +939,17 @@ void blk_unregister_queue(struct gendisk *disk)
 	if (WARN_ON(!q))
 		return;
 
-	queue_flag_clear_unlocked(QUEUE_FLAG_REGISTERED, q);
+	/*
+	 * Protect against the 'queue' kobj being accessed
+	 * while/after it is removed.
+	 */
+	mutex_lock(&q->sysfs_lock);
+
+	spin_lock_irq(q->queue_lock);
+	queue_flag_clear(QUEUE_FLAG_REGISTERED, q);
+	spin_unlock_irq(q->queue_lock);
 
 	wbt_exit(q);
-
 
 	if (q->mq_ops)
 		blk_mq_unregister_dev(disk_to_dev(disk), q);
@@ -946,4 +961,6 @@ void blk_unregister_queue(struct gendisk *disk)
 	kobject_del(&q->kobj);
 	blk_trace_remove_sysfs(disk_to_dev(disk));
 	kobject_put(&disk_to_dev(disk)->kobj);
+
+	mutex_unlock(&q->sysfs_lock);
 }

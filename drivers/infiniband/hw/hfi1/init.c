@@ -213,11 +213,11 @@ static void hfi1_rcd_free(struct kref *kref)
 	struct hfi1_ctxtdata *rcd =
 		container_of(kref, struct hfi1_ctxtdata, kref);
 
-	hfi1_free_ctxtdata(rcd->dd, rcd);
-
 	spin_lock_irqsave(&rcd->dd->uctxt_lock, flags);
 	rcd->dd->rcd[rcd->ctxt] = NULL;
 	spin_unlock_irqrestore(&rcd->dd->uctxt_lock, flags);
+
+	hfi1_free_ctxtdata(rcd->dd, rcd);
 
 	kfree(rcd);
 }
@@ -241,10 +241,13 @@ int hfi1_rcd_put(struct hfi1_ctxtdata *rcd)
  * @rcd: pointer to an initialized rcd data structure
  *
  * Use this to get a reference after the init.
+ *
+ * Return : reflect kref_get_unless_zero(), which returns non-zero on
+ * increment, otherwise 0.
  */
-void hfi1_rcd_get(struct hfi1_ctxtdata *rcd)
+int hfi1_rcd_get(struct hfi1_ctxtdata *rcd)
 {
-	kref_get(&rcd->kref);
+	return kref_get_unless_zero(&rcd->kref);
 }
 
 /**
@@ -324,7 +327,8 @@ struct hfi1_ctxtdata *hfi1_rcd_get_by_index(struct hfi1_devdata *dd, u16 ctxt)
 	spin_lock_irqsave(&dd->uctxt_lock, flags);
 	if (dd->rcd[ctxt]) {
 		rcd = dd->rcd[ctxt];
-		hfi1_rcd_get(rcd);
+		if (!hfi1_rcd_get(rcd))
+			rcd = NULL;
 	}
 	spin_unlock_irqrestore(&dd->uctxt_lock, flags);
 
@@ -366,7 +370,6 @@ int hfi1_create_ctxtdata(struct hfi1_pportdata *ppd, int numa,
 		hfi1_exp_tid_group_init(&rcd->tid_full_list);
 		rcd->ppd = ppd;
 		rcd->dd = dd;
-		__set_bit(0, rcd->in_use_ctxts);
 		rcd->numa_id = numa;
 		rcd->rcv_array_groups = dd->rcv_entries.ngroups;
 

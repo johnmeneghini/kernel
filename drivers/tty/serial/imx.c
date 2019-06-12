@@ -338,7 +338,8 @@ static void imx_port_rts_active(struct imx_port *sport, unsigned long *ucr2)
 {
 	*ucr2 &= ~(UCR2_CTSC | UCR2_CTS);
 
-	mctrl_gpio_set(sport->gpios, sport->port.mctrl | TIOCM_RTS);
+	sport->port.mctrl |= TIOCM_RTS;
+	mctrl_gpio_set(sport->gpios, sport->port.mctrl);
 }
 
 static void imx_port_rts_inactive(struct imx_port *sport, unsigned long *ucr2)
@@ -346,7 +347,8 @@ static void imx_port_rts_inactive(struct imx_port *sport, unsigned long *ucr2)
 	*ucr2 &= ~UCR2_CTSC;
 	*ucr2 |= UCR2_CTS;
 
-	mctrl_gpio_set(sport->gpios, sport->port.mctrl & ~TIOCM_RTS);
+	sport->port.mctrl &= ~TIOCM_RTS;
+	mctrl_gpio_set(sport->gpios, sport->port.mctrl);
 }
 
 static void imx_port_rts_auto(struct imx_port *sport, unsigned long *ucr2)
@@ -1962,7 +1964,7 @@ imx_console_setup(struct console *co, char *options)
 
 	retval = clk_prepare(sport->clk_per);
 	if (retval)
-		clk_disable_unprepare(sport->clk_ipg);
+		clk_unprepare(sport->clk_ipg);
 
 error_console:
 	return retval;
@@ -2216,6 +2218,14 @@ static int serial_imx_probe(struct platform_device *pdev)
 				       dev_name(&pdev->dev), sport);
 		if (ret) {
 			dev_err(&pdev->dev, "failed to request tx irq: %d\n",
+				ret);
+			return ret;
+		}
+
+		ret = devm_request_irq(&pdev->dev, rtsirq, imx_rtsint, 0,
+				       dev_name(&pdev->dev), sport);
+		if (ret) {
+			dev_err(&pdev->dev, "failed to request rts irq: %d\n",
 				ret);
 			return ret;
 		}

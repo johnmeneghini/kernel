@@ -4224,6 +4224,7 @@ core_scsi3_pri_read_full_status_execute(struct se_cmd *cmd, unsigned char *buf,
 		 * Set the ADDITIONAL DESCRIPTOR LENGTH
 		 */
 		put_unaligned_be32(desc_len, &buf[off]);
+		off += 4;
 		/*
 		 * Size of full desctipor header minus TransportID
 		 * containing $FABRIC_MOD specific) initiator device/port
@@ -4357,6 +4358,8 @@ target_check_reservation(struct se_cmd *cmd)
 	if (!cmd->se_sess)
 		return 0;
 	if (dev->se_hba->hba_flags & HBA_FLAGS_INTERNAL_USE)
+		return 0;
+	if (!dev->dev_attrib.emulate_pr)
 		return 0;
 	if (dev->transport->transport_flags & TRANSPORT_FLAG_PASSTHROUGH_PGR)
 		return 0;

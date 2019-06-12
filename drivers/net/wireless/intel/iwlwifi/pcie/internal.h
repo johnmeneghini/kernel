@@ -290,6 +290,8 @@ struct iwl_txq {
 	u32 id;
 	int low_mark;
 	int high_mark;
+
+	bool overflow_tx;
 };
 
 static inline dma_addr_t
@@ -777,6 +779,7 @@ static inline void __iwl_trans_pcie_set_bit(struct iwl_trans *trans,
 }
 
 void iwl_trans_pcie_rf_kill(struct iwl_trans *trans, bool state);
+void iwl_trans_sync_nmi(struct iwl_trans *trans);
 
 #ifdef CONFIG_IWLWIFI_DEBUGFS
 int iwl_trans_pcie_dbgfs_register(struct iwl_trans *trans);

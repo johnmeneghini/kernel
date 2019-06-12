@@ -1855,10 +1855,32 @@ static int rx_data(struct c4iw_dev *dev, struct sk_buff *skb)
 	return 0;
 }
 
+static void complete_cached_srq_buffers(struct c4iw_ep *ep, u32 srqidx_status)
+{
+	enum chip_type adapter_type;
+	u32 srqidx;
+
+	adapter_type = ep->com.dev->rdev.lldi.adapter_type;
+	srqidx = ABORT_RSS_SRQIDX_G(be32_to_cpu(srqidx_status));
+
+	/*
+	 * If this TCB had a srq buffer cached, then we must complete
+	 * it. For user mode, that means saving the srqidx in the
+	 * user/kernel status page for this qp.  For kernel mode, just
+	 * synthesize the CQE now.
+	 */
+	if (CHELSIO_CHIP_VERSION(adapter_type) > CHELSIO_T5 && srqidx) {
+		if (ep->com.qp->ibqp.uobject)
+			t4_set_wq_in_error(&ep->com.qp->wq, srqidx);
+		else
+			c4iw_flush_srqidx(ep->com.qp, srqidx);
+	}
+}
+
 static int abort_rpl(struct c4iw_dev *dev, struct sk_buff *skb)
 {
 	struct c4iw_ep *ep;
-	struct cpl_abort_rpl_rss *rpl = cplhdr(skb);
+	struct cpl_abort_rpl_rss6 *rpl = cplhdr(skb);
 	int release = 0;
 	unsigned int tid = GET_TID(rpl);
 
@@ -1867,6 +1889,9 @@ static int abort_rpl(struct c4iw_dev *dev, struct sk_buff *skb)
 		pr_warn("Abort rpl to freed endpoint\n");
 		return 0;
 	}
+
+	complete_cached_srq_buffers(ep, rpl->srqidx_status);
+
 	pr_debug("ep %p tid %u\n", ep, ep->hwtid);
 	mutex_lock(&ep->com.mutex);
 	switch (ep->com.state) {
@@ -2036,8 +2061,7 @@ static int import_ep(struct c4iw_ep *ep, int iptype, __u8 *peer_ip,
 		}
 		ep->mtu = pdev->mtu;
 		ep->tx_chan = cxgb4_port_chan(pdev);
-		ep->smac_idx = cxgb4_tp_smt_idx(adapter_type,
-						cxgb4_port_viid(pdev));
+		ep->smac_idx = ((struct port_info *)netdev_priv(pdev))->smt_idx;
 		step = cdev->rdev.lldi.ntxq /
 			cdev->rdev.lldi.nchan;
 		ep->txq_idx = cxgb4_port_idx(pdev) * step;
@@ -2056,8 +2080,7 @@ static int import_ep(struct c4iw_ep *ep, int iptype, __u8 *peer_ip,
 			goto out;
 		ep->mtu = dst_mtu(dst);
 		ep->tx_chan = cxgb4_port_chan(pdev);
-		ep->smac_idx = cxgb4_tp_smt_idx(adapter_type,
-						cxgb4_port_viid(pdev));
+		ep->smac_idx = ((struct port_info *)netdev_priv(pdev))->smt_idx;
 		step = cdev->rdev.lldi.ntxq /
 			cdev->rdev.lldi.nchan;
 		ep->txq_idx = cxgb4_port_idx(pdev) * step;
@@ -2722,28 +2745,35 @@ static int peer_close(struct c4iw_dev *dev, struct sk_buff *skb)
 
 static int peer_abort(struct c4iw_dev *dev, struct sk_buff *skb)
 {
-	struct cpl_abort_req_rss *req = cplhdr(skb);
+	struct cpl_abort_req_rss6 *req = cplhdr(skb);
 	struct c4iw_ep *ep;
 	struct sk_buff *rpl_skb;
 	struct c4iw_qp_attributes attrs;
 	int ret;
 	int release = 0;
 	unsigned int tid = GET_TID(req);
+	u8 status;
+
 	u32 len = roundup(sizeof(struct cpl_abort_rpl), 16);
 
 	ep = get_ep_from_tid(dev, tid);
 	if (!ep)
 		return 0;
 
-	if (cxgb_is_neg_adv(req->status)) {
+	status = ABORT_RSS_STATUS_G(be32_to_cpu(req->srqidx_status));
+
+	if (cxgb_is_neg_adv(status)) {
 		pr_debug("Negative advice on abort- tid %u status %d (%s)\n",
-			 ep->hwtid, req->status, neg_adv_str(req->status));
+			 ep->hwtid, status, neg_adv_str(status));
 		ep->stats.abort_neg_adv++;
 		mutex_lock(&dev->rdev.stats.lock);
 		dev->rdev.stats.neg_adv++;
 		mutex_unlock(&dev->rdev.stats.lock);
 		goto deref_ep;
 	}
+
+	complete_cached_srq_buffers(ep, req->srqidx_status);
+
 	pr_debug("ep %p tid %u state %u\n", ep, ep->hwtid,
 		 ep->com.state);
 	set_bit(PEER_ABORT, &ep->com.history);
@@ -3445,9 +3475,6 @@ int c4iw_create_listen(struct iw_cm_id *cm_id, int backlog)
 		goto fail2;
 	}
 	insert_handle(dev, &dev->stid_idr, ep, ep->stid);
-
-	memcpy(&ep->com.local_addr, &cm_id->m_local_addr,
-	       sizeof(ep->com.local_addr));
 
 	state_set(&ep->com, LISTEN);
 	if (ep->com.local_addr.ss_family == AF_INET)

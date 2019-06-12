@@ -227,6 +227,8 @@ struct x86_emulate_ops {
 
 };
 
+void emulator_force_system(struct x86_emulate_ctxt *ctxt);
+
 typedef u32 __attribute__((vector_size(16))) sse128_t;
 
 /* Type, address-of, and value of an instruction's operand. */

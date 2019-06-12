@@ -20,6 +20,7 @@
 #include <linux/ethtool.h>
 #include <linux/hashtable.h>
 #include <linux/ip.h>
+#include <linux/workqueue.h>
 
 #include <net/ipv6.h>
 #include <net/if_inet6.h>
@@ -84,6 +85,18 @@ struct qeth_dbf_info {
 #define SENSE_RESETTING_EVENT_BYTE 1
 #define SENSE_RESETTING_EVENT_FLAG 0x80
 
+static inline u32 qeth_get_device_id(struct ccw_device *cdev)
+{
+	struct ccw_dev_id dev_id;
+	u32 id;
+
+	ccw_device_get_id(cdev, &dev_id);
+	id = dev_id.devno;
+	id |= (u32) (dev_id.ssid << 16);
+
+	return id;
+}
+
 /*
  * Common IO related definitions
  */
@@ -94,7 +107,8 @@ struct qeth_dbf_info {
 #define CARD_RDEV_ID(card) dev_name(&card->read.ccwdev->dev)
 #define CARD_WDEV_ID(card) dev_name(&card->write.ccwdev->dev)
 #define CARD_DDEV_ID(card) dev_name(&card->data.ccwdev->dev)
-#define CHANNEL_ID(channel) dev_name(&channel->ccwdev->dev)
+#define CCW_DEVID(cdev)		(qeth_get_device_id(cdev))
+#define CARD_DEVID(card)	(CCW_DEVID(CARD_RDEV(card)))
 
 /**
  * card stuff
@@ -792,6 +806,7 @@ struct qeth_card {
 	struct qeth_seqno seqno;
 	struct qeth_card_options options;
 
+	struct workqueue_struct *event_wq;
 	wait_queue_head_t wait_q;
 	spinlock_t vlanlock;
 	spinlock_t mclock;
@@ -843,6 +858,17 @@ struct qeth_trap_id {
 
 /*some helper functions*/
 #define QETH_CARD_IFNAME(card) (((card)->dev)? (card)->dev->name : "")
+
+static inline void qeth_scrub_qdio_buffer(struct qdio_buffer *buf,
+					  unsigned int elements)
+{
+	unsigned int i;
+
+	for (i = 0; i < elements; i++)
+		memset(&buf->element[i], 0, sizeof(struct qdio_buffer_element));
+	buf->element[14].sflags = 0;
+	buf->element[15].sflags = 0;
+}
 
 /**
  * qeth_get_elements_for_range() -	find number of SBALEs to cover range.
@@ -897,7 +923,6 @@ extern const struct attribute_group *qeth_osn_attr_groups[];
 extern const struct attribute_group qeth_device_attr_group;
 extern const struct attribute_group qeth_device_blkt_group;
 extern const struct device_type qeth_generic_devtype;
-extern struct workqueue_struct *qeth_wq;
 
 int qeth_card_hw_is_reachable(struct qeth_card *);
 const char *qeth_get_cardname_short(struct qeth_card *);
@@ -1003,7 +1028,7 @@ struct qeth_cmd_buffer *qeth_get_setassparms_cmd(struct qeth_card *,
 						 __u16, __u16,
 						 enum qeth_prot_versions);
 int qeth_set_features(struct net_device *, netdev_features_t);
-int qeth_recover_features(struct net_device *);
+void qeth_enable_hw_features(struct net_device *dev);
 netdev_features_t qeth_fix_features(struct net_device *, netdev_features_t);
 netdev_features_t qeth_features_check(struct sk_buff *skb,
 				      struct net_device *dev,

@@ -528,11 +528,16 @@ static int acpi_gsb_i2c_write_bytes(struct i2c_client *client,
 	msgs[0].buf = buffer;
 
 	ret = i2c_transfer(client->adapter, msgs, ARRAY_SIZE(msgs));
-	if (ret < 0)
-		dev_err(&client->adapter->dev, "i2c write failed\n");
 
 	kfree(buffer);
-	return ret;
+
+	if (ret < 0) {
+		dev_err(&client->adapter->dev, "i2c write failed: %d\n", ret);
+		return ret;
+	}
+
+	/* 1 transfer must have completed successfully */
+	return (ret == 1) ? 0 : -EIO;
 }
 
 static acpi_status
@@ -1463,6 +1468,8 @@ EXPORT_SYMBOL_GPL(i2c_new_device);
  */
 void i2c_unregister_device(struct i2c_client *client)
 {
+	if (!client)
+		return;
 	if (client->dev.of_node)
 		of_node_clear_flag(client->dev.of_node, OF_POPULATED);
 	if (ACPI_COMPANION(&client->dev))
@@ -2276,8 +2283,7 @@ static int __unregister_client(struct device *dev, void *dummy)
 static int __unregister_dummy(struct device *dev, void *dummy)
 {
 	struct i2c_client *client = i2c_verify_client(dev);
-	if (client)
-		i2c_unregister_device(client);
+	i2c_unregister_device(client);
 	return 0;
 }
 

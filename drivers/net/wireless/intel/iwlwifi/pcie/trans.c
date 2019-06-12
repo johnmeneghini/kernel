@@ -1431,18 +1431,6 @@ static int iwl_trans_pcie_d3_resume(struct iwl_trans *trans,
 
 	iwl_pcie_enable_rx_wake(trans, true);
 
-	/*
-	 * Reconfigure IVAR table in case of MSIX or reset ict table in
-	 * MSI mode since HW reset erased it.
-	 * Also enables interrupts - none will happen as
-	 * the device doesn't know we're waking it up, only when
-	 * the opmode actually tells it after this call.
-	 */
-	iwl_pcie_conf_msix_hw(trans_pcie);
-	if (!trans_pcie->msix_enabled)
-		iwl_pcie_reset_ict(trans);
-	iwl_enable_interrupts(trans);
-
 	iwl_set_bit(trans, CSR_GP_CNTRL, CSR_GP_CNTRL_REG_FLAG_MAC_ACCESS_REQ);
 	iwl_set_bit(trans, CSR_GP_CNTRL, CSR_GP_CNTRL_REG_FLAG_INIT_DONE);
 
@@ -1457,6 +1445,18 @@ static int iwl_trans_pcie_d3_resume(struct iwl_trans *trans,
 		IWL_ERR(trans, "Failed to resume the device (mac ready)\n");
 		return ret;
 	}
+
+	/*
+	 * Reconfigure IVAR table in case of MSIX or reset ict table in
+	 * MSI mode since HW reset erased it.
+	 * Also enables interrupts - none will happen as
+	 * the device doesn't know we're waking it up, only when
+	 * the opmode actually tells it after this call.
+	 */
+	iwl_pcie_conf_msix_hw(trans_pcie);
+	if (!trans_pcie->msix_enabled)
+		iwl_pcie_reset_ict(trans);
+	iwl_enable_interrupts(trans);
 
 	iwl_pcie_set_pwr(trans, false);
 
@@ -2069,6 +2069,7 @@ static int iwl_trans_pcie_wait_txq_empty(struct iwl_trans *trans, int txq_idx)
 	struct iwl_trans_pcie *trans_pcie = IWL_TRANS_GET_PCIE_TRANS(trans);
 	struct iwl_txq *txq;
 	unsigned long now = jiffies;
+	bool overflow_tx;
 	u8 wr_ptr;
 
 	if (!test_bit(txq_idx, trans_pcie->queue_used))
@@ -2076,18 +2077,37 @@ static int iwl_trans_pcie_wait_txq_empty(struct iwl_trans *trans, int txq_idx)
 
 	IWL_DEBUG_TX_QUEUES(trans, "Emptying queue %d...\n", txq_idx);
 	txq = trans_pcie->txq[txq_idx];
+
+	spin_lock_bh(&txq->lock);
+	overflow_tx = txq->overflow_tx ||
+		      !skb_queue_empty(&txq->overflow_q);
+	spin_unlock_bh(&txq->lock);
+
 	wr_ptr = READ_ONCE(txq->write_ptr);
 
-	while (txq->read_ptr != READ_ONCE(txq->write_ptr) &&
+	while ((txq->read_ptr != READ_ONCE(txq->write_ptr) ||
+		overflow_tx) &&
 	       !time_after(jiffies,
 			   now + msecs_to_jiffies(IWL_FLUSH_WAIT_MS))) {
 		u8 write_ptr = READ_ONCE(txq->write_ptr);
 
-		if (WARN_ONCE(wr_ptr != write_ptr,
+		/*
+		 * If write pointer moved during the wait, warn only
+		 * if the TX came from op mode. In case TX came from
+		 * trans layer (overflow TX) don't warn.
+		 */
+		if (WARN_ONCE(wr_ptr != write_ptr && !overflow_tx,
 			      "WR pointer moved while flushing %d -> %d\n",
 			      wr_ptr, write_ptr))
 			return -ETIMEDOUT;
+		wr_ptr = write_ptr;
+
 		usleep_range(1000, 2000);
+
+		spin_lock_bh(&txq->lock);
+		overflow_tx = txq->overflow_tx ||
+			      !skb_queue_empty(&txq->overflow_q);
+		spin_unlock_bh(&txq->lock);
 	}
 
 	if (txq->read_ptr != txq->write_ptr) {
@@ -3204,4 +3224,29 @@ out_no_pci:
 	free_percpu(trans_pcie->tso_hdr_page);
 	iwl_trans_free(trans);
 	return ERR_PTR(ret);
+}
+
+void iwl_trans_sync_nmi(struct iwl_trans *trans)
+{
+	unsigned long timeout = jiffies + IWL_TRANS_NMI_TIMEOUT;
+
+	iwl_disable_interrupts(trans);
+	iwl_force_nmi(trans);
+	while (time_after(timeout, jiffies)) {
+		u32 inta_hw = iwl_read32(trans,
+					 CSR_MSIX_HW_INT_CAUSES_AD);
+
+		/* Error detected by uCode */
+		if (inta_hw & MSIX_HW_INT_CAUSES_REG_SW_ERR) {
+			/* Clear causes register */
+			iwl_write32(trans, CSR_MSIX_HW_INT_CAUSES_AD,
+				    inta_hw &
+				    MSIX_HW_INT_CAUSES_REG_SW_ERR);
+			break;
+		}
+
+		mdelay(1);
+	}
+	iwl_enable_interrupts(trans);
+	iwl_trans_fw_error(trans);
 }

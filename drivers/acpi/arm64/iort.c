@@ -370,7 +370,6 @@ static struct acpi_iort_node *iort_node_get_id(struct acpi_iort_node *node,
 	return NULL;
 }
 
-#if (ACPI_CA_VERSION > 0x20170929)
 static int iort_get_id_mapping_index(struct acpi_iort_node *node)
 {
 	struct acpi_iort_smmu_v3 *smmu;
@@ -404,12 +403,6 @@ static int iort_get_id_mapping_index(struct acpi_iort_node *node)
 		return -EINVAL;
 	}
 }
-#else
-static inline int iort_get_id_mapping_index(struct acpi_iort_node *node)
-{
-	return -EINVAL;
-}
-#endif
 
 static struct acpi_iort_node *iort_node_map_id(struct acpi_iort_node *node,
 					       u32 id_in, u32 *id_out,
@@ -712,7 +705,7 @@ static void iort_set_device_domain(struct device *dev,
  */
 static struct irq_domain *iort_get_platform_device_domain(struct device *dev)
 {
-	struct acpi_iort_node *node, *msi_parent;
+	struct acpi_iort_node *node, *msi_parent = NULL;
 	struct fwnode_handle *iort_fwnode;
 	struct acpi_iort_its_group *its;
 	int i;

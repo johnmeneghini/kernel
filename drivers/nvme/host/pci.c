@@ -305,6 +305,14 @@ static bool nvme_dbbuf_update_and_check_event(u16 value, u32 *dbbuf_db,
 		old_value = *dbbuf_db;
 		*dbbuf_db = value;
 
+		/*
+		 * Ensure that the doorbell is updated before reading the event
+		 * index from memory.  The controller needs to provide similar
+		 * ordering to ensure the envent index is updated before reading
+		 * the doorbell.
+		 */
+		mb();
+
 		if (!nvme_dbbuf_need_event(*dbbuf_ei, value, old_value))
 			return false;
 	}
@@ -965,9 +973,11 @@ static inline bool nvme_read_cqe(struct nvme_queue *nvmeq,
 	if (nvme_cqe_valid(nvmeq, nvmeq->cq_head, nvmeq->cq_phase)) {
 		*cqe = nvmeq->cqes[nvmeq->cq_head];
 
-		if (++nvmeq->cq_head == nvmeq->q_depth) {
+		if (nvmeq->cq_head == nvmeq->q_depth - 1) {
 			nvmeq->cq_head = 0;
 			nvmeq->cq_phase = !nvmeq->cq_phase;
+		} else {
+			nvmeq->cq_head++;
 		}
 		return true;
 	}

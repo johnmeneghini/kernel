@@ -360,6 +360,7 @@ struct cxgb4_lld_info {
 #ifndef __GENKSYMS__
 	bool write_w_imm_support;         /* FW supports WRITE_WITH_IMMEDIATE */
 	bool write_cmpl_support;             /* FW supports WRITE_CMPL WR */
+	unsigned int sge_host_page_size;     /* SGE host page size */
 #endif
 };
 
@@ -383,7 +384,7 @@ struct cxgb4_uld_info {
 	void (*lro_flush)(struct t4_lro_mgr *);
 };
 
-int cxgb4_register_uld(enum cxgb4_uld type, const struct cxgb4_uld_info *p);
+void cxgb4_register_uld(enum cxgb4_uld type, const struct cxgb4_uld_info *p);
 int cxgb4_unregister_uld(enum cxgb4_uld type);
 int cxgb4_ofld_send(struct net_device *dev, struct sk_buff *skb);
 int cxgb4_crypto_send(struct net_device *dev, struct sk_buff *skb);

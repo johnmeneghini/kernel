@@ -887,7 +887,7 @@ static int pm_genpd_prepare(struct device *dev)
 	genpd_unlock(genpd);
 
 	ret = pm_generic_prepare(dev);
-	if (ret) {
+	if (ret < 0) {
 		genpd_lock(genpd);
 
 		genpd->prepared_count--;
@@ -895,7 +895,8 @@ static int pm_genpd_prepare(struct device *dev)
 		genpd_unlock(genpd);
 	}
 
-	return ret;
+	/* Never return 1, as genpd don't cope with the direct_complete path. */
+	return ret >= 0 ? 0 : ret;
 }
 
 /**
@@ -2075,6 +2076,9 @@ int genpd_dev_pm_attach(struct device *dev)
 	genpd_lock(pd);
 	ret = genpd_power_on(pd, 0);
 	genpd_unlock(pd);
+
+	if (ret)
+		genpd_remove_device(pd, dev);
 out:
 	return ret ? -EPROBE_DEFER : 0;
 }

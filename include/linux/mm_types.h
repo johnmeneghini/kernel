@@ -57,6 +57,9 @@ struct page {
 
 	/* Second double word */
 	union {
+#ifndef __GENKSYMS__
+		atomic_t pt_frag_refcount; /* powerpc */
+#endif
 		pgoff_t index;		/* Our offset within mapping. */
 		void *freelist;		/* sl[aou]b first free object */
 		/* page_deferred_list().prev	-- second tail page */
@@ -508,6 +511,9 @@ struct mm_struct {
 #if IS_ENABLED(CONFIG_HMM)
 	/* HMM needs to track a few things per mm */
 	struct hmm *hmm;
+#endif
+#if defined(CONFIG_S390) && !defined(__GENKSYMS__)
+	spinlock_t mm_context_lock;
 #endif
 };
 

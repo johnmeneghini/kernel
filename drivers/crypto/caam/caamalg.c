@@ -971,6 +971,7 @@ static void init_aead_job(struct aead_request *req,
 	if (unlikely(req->src != req->dst)) {
 		if (edesc->dst_nents == 1) {
 			dst_dma = sg_dma_address(req->dst);
+			out_options = 0;
 		} else {
 			dst_dma = edesc->sec4_sg_dma +
 				  sec4_sg_index *
@@ -1511,8 +1512,8 @@ static struct ablkcipher_edesc *ablkcipher_edesc_alloc(struct ablkcipher_request
 	edesc->src_nents = src_nents;
 	edesc->dst_nents = dst_nents;
 	edesc->sec4_sg_bytes = sec4_sg_bytes;
-	edesc->sec4_sg = (void *)edesc + sizeof(struct ablkcipher_edesc) +
-			 desc_bytes;
+	edesc->sec4_sg = (struct sec4_sg_entry *)((u8 *)edesc->hw_desc +
+						  desc_bytes);
 	edesc->iv_dir = DMA_TO_DEVICE;
 
 	/* Make sure IV is located in a DMAable area */
@@ -1716,8 +1717,8 @@ static struct ablkcipher_edesc *ablkcipher_giv_edesc_alloc(
 	edesc->src_nents = src_nents;
 	edesc->dst_nents = dst_nents;
 	edesc->sec4_sg_bytes = sec4_sg_bytes;
-	edesc->sec4_sg = (void *)edesc + sizeof(struct ablkcipher_edesc) +
-			 desc_bytes;
+	edesc->sec4_sg = (struct sec4_sg_entry *)((u8 *)edesc->hw_desc +
+						  desc_bytes);
 	edesc->iv_dir = DMA_FROM_DEVICE;
 
 	/* Make sure IV is located in a DMAable area */
@@ -3359,7 +3360,6 @@ static int __init caam_algapi_init(void)
 {
 	struct device_node *dev_node;
 	struct platform_device *pdev;
-	struct device *ctrldev;
 	struct caam_drv_private *priv;
 	int i = 0, err = 0;
 	u32 cha_vid, cha_inst, des_inst, aes_inst, md_inst;
@@ -3379,16 +3379,17 @@ static int __init caam_algapi_init(void)
 		return -ENODEV;
 	}
 
-	ctrldev = &pdev->dev;
-	priv = dev_get_drvdata(ctrldev);
+	priv = dev_get_drvdata(&pdev->dev);
 	of_node_put(dev_node);
 
 	/*
 	 * If priv is NULL, it's probably because the caam driver wasn't
 	 * properly initialized (e.g. RNG4 init failed). Thus, bail out here.
 	 */
-	if (!priv)
-		return -ENODEV;
+	if (!priv) {
+		err = -ENODEV;
+		goto out_put_dev;
+	}
 
 
 	INIT_LIST_HEAD(&alg_list);
@@ -3500,6 +3501,8 @@ static int __init caam_algapi_init(void)
 	if (registered)
 		pr_info("caam algorithms registered in /proc/crypto\n");
 
+out_put_dev:
+	put_device(&pdev->dev);
 	return err;
 }
 

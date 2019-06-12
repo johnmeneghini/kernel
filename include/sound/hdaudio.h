@@ -355,6 +355,7 @@ void snd_hdac_bus_init_cmd_io(struct hdac_bus *bus);
 void snd_hdac_bus_stop_cmd_io(struct hdac_bus *bus);
 void snd_hdac_bus_enter_link_reset(struct hdac_bus *bus);
 void snd_hdac_bus_exit_link_reset(struct hdac_bus *bus);
+int snd_hdac_bus_reset_link(struct hdac_bus *bus, bool full_reset);
 
 void snd_hdac_bus_update_rirb(struct hdac_bus *bus);
 int snd_hdac_bus_handle_stream_irq(struct hdac_bus *bus, unsigned int status,
@@ -570,5 +571,10 @@ static inline unsigned int snd_array_index(struct snd_array *array, void *ptr)
 {
 	return (unsigned long)(ptr - array->list) / array->elem_size;
 }
+
+/* a helper macro to iterate for each snd_array element */
+#define snd_array_for_each(array, idx, ptr) \
+	for ((idx) = 0, (ptr) = (array)->list; (idx) < (array)->used; \
+	     (ptr) = snd_array_elem(array, ++(idx)))
 
 #endif /* __SOUND_HDAUDIO_H */

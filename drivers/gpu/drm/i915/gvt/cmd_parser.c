@@ -1411,7 +1411,7 @@ static inline int cmd_address_audit(struct parser_exec_state *s,
 	}
 
 	if (index_mode)	{
-		if (guest_gma >= I915_GTT_PAGE_SIZE / sizeof(u64)) {
+		if (guest_gma >= I915_GTT_PAGE_SIZE) {
 			ret = -EFAULT;
 			goto err;
 		}
@@ -2448,7 +2448,7 @@ static struct cmd_info cmd_info[] = {
 		0, 12, NULL},
 
 	{"VEB_DI_IECP", OP_VEB_DNDI_IECP_STATE, F_LEN_VAR, R_VECS, D_BDW_PLUS,
-		0, 20, NULL},
+		0, 12, NULL},
 };
 
 static void add_cmd_entry(struct intel_gvt *gvt, struct cmd_entry *e)

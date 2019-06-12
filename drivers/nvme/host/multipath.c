@@ -41,7 +41,7 @@ void nvme_set_disk_name(char *disk_name, struct nvme_ns *ns,
 		sprintf(disk_name, "nvme%dn%d", ctrl->instance, ns->head->instance);
 	} else if (ns->head->disk) {
 		sprintf(disk_name, "nvme%dc%dn%d", ctrl->subsys->instance,
-				ctrl->cntlid, ns->head->instance);
+				ctrl->instance, ns->head->instance);
 		*flags = GENHD_FL_HIDDEN;
 	} else {
 		sprintf(disk_name, "nvme%dn%d", ctrl->subsys->instance,
@@ -78,6 +78,13 @@ void nvme_failover_req(struct request *req)
 			set_bit(NVME_NS_ANA_PENDING, &ns->flags);
 			queue_work(nvme_wq, &ns->ctrl->ana_work);
 		}
+		break;
+	case NVME_SC_HOST_PATH_ERROR:
+		/*
+		 * Temporary transport disruption in talking to the controller.
+		 * Try to send on a new path.
+		 */
+		nvme_mpath_clear_current_path(ns);
 		break;
 	default:
 		/*
@@ -144,6 +151,54 @@ static struct nvme_ns *__nvme_find_path(struct nvme_ns_head *head)
 	return fallback;
 }
 
+static struct nvme_ns *__nvme_rr_next_path(struct nvme_ns_head *head,
+					   struct nvme_ns *old)
+{
+	struct nvme_ns *ns, *found = NULL;
+	bool try_nonoptimized = false;
+
+	if (!old)
+		return NULL;
+retry:
+	ns = old;
+	do {
+		ns = list_next_or_null_rcu(&head->list, &ns->siblings,
+					   struct nvme_ns, siblings);
+		if (!ns) {
+			ns = list_first_or_null_rcu(&head->list, struct nvme_ns,
+						    siblings);
+			if (!ns)
+				return NULL;
+
+			if (ns == old)
+				/*
+				 * The list consists of just one entry.
+				 * Sorry for the noise :-)
+				 */
+				return old;
+		}
+		if (ns->disk && ns->ctrl->state == NVME_CTRL_LIVE) {
+			if (ns->ana_state == NVME_ANA_OPTIMIZED) {
+				found = ns;
+				break;
+			}
+			if (try_nonoptimized &&
+			    ns->ana_state == NVME_ANA_NONOPTIMIZED) {
+				found = ns;
+				break;
+			}
+		}
+	} while (ns != old);
+
+	if (found)
+		rcu_assign_pointer(head->current_path, found);
+	else if (!try_nonoptimized) {
+		try_nonoptimized = true;
+		goto retry;
+	}
+	return found;
+}
+
 static inline bool nvme_path_is_optimized(struct nvme_ns *ns)
 {
 	return ns->ctrl->state == NVME_CTRL_LIVE &&
@@ -154,6 +209,8 @@ inline struct nvme_ns *nvme_find_path(struct nvme_ns_head *head)
 {
 	struct nvme_ns *ns = srcu_dereference(head->current_path, &head->srcu);
 
+	if (READ_ONCE(head->subsys->iopolicy) == NVME_IOPOLICY_RR)
+		ns = __nvme_rr_next_path(head, ns);
 	if (unlikely(!ns || !nvme_path_is_optimized(ns)))
 		ns = __nvme_find_path(head);
 	return ns;
@@ -167,6 +224,14 @@ static blk_qc_t nvme_ns_head_make_request(struct request_queue *q,
 	struct nvme_ns *ns;
 	blk_qc_t ret = BLK_QC_T_NONE;
 	int srcu_idx;
+
+	/*
+	 * The namespace might be going away and the bio might
+	 * be moved to a different queue via blk_steal_bios(),
+	 * so we need to use the bio_split pool from the original
+	 * queue to allocate the bvecs from.
+	 */
+	blk_queue_split(q, &bio);
 
 	srcu_idx = srcu_read_lock(&head->srcu);
 	ns = nvme_find_path(head);
@@ -259,6 +324,7 @@ int nvme_mpath_alloc_disk(struct nvme_ctrl *ctrl, struct nvme_ns_head *head)
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, q);
 	/* set to a default value for 512 until disk is validated */
 	blk_queue_logical_block_size(q, 512);
+	blk_set_stacking_limits(&q->limits);
 
 	/* we need to propagate up the VMC settings */
 	if (ctrl->vwc & NVME_CTRL_VWC_PRESENT)
@@ -292,14 +358,12 @@ static void nvme_mpath_set_live(struct nvme_ns *ns)
 		return;
 
 	if (!(head->disk->flags & GENHD_FL_UP)) {
-		device_add_disk(&head->subsys->dev, head->disk);
-		if (sysfs_create_group(&disk_to_dev(head->disk)->kobj,
-				&nvme_ns_id_attr_group))
-			dev_warn(&head->subsys->dev,
-				 "failed to create id group.\n");
-	}
+		struct device *dev = disk_to_dev(head->disk);
 
-	kblockd_schedule_work(&ns->head->requeue_work);
+		WARN_ON(dev->groups);
+		dev->groups = nvme_ns_id_attr_groups;
+		device_add_disk(&head->subsys->dev, head->disk);
+	}
 }
 
 static int nvme_parse_ana_log(struct nvme_ctrl *ctrl, void *data,
@@ -358,8 +422,11 @@ static void nvme_update_ns_ana_state(struct nvme_ana_group_desc *desc,
 	ns->ana_state = desc->state;
 	clear_bit(NVME_NS_ANA_PENDING, &ns->flags);
 
-	if (nvme_state_is_live(ns->ana_state) && !nvme_state_is_live(old))
-		nvme_mpath_set_live(ns);
+	if (nvme_state_is_live(ns->ana_state)) {
+		if (!nvme_state_is_live(old))
+			nvme_mpath_set_live(ns);
+		kblockd_schedule_work(&ns->head->requeue_work);
+	}
 	mutex_unlock(&ns->head->lock);
 }
 
@@ -455,6 +522,51 @@ void nvme_mpath_stop(struct nvme_ctrl *ctrl)
 	cancel_work_sync(&ctrl->ana_work);
 }
 
+#define SUBSYS_ATTR_RW(_name, _mode, _show, _store)  \
+	struct device_attribute subsys_attr_##_name =	\
+		__ATTR(_name, _mode, _show, _store)
+
+static const char *nvme_iopolicy_names[] = {
+	[NVME_IOPOLICY_UNKNOWN] = "unknown",
+	[NVME_IOPOLICY_NUMA] = "numa",
+	[NVME_IOPOLICY_RR] = "round-robin",
+};
+
+static ssize_t nvme_subsys_iopolicy_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	struct nvme_subsystem *subsys =
+		container_of(dev, struct nvme_subsystem, dev);
+	int iopolicy = NVME_IOPOLICY_UNKNOWN;
+
+	if (iopolicy < ARRAY_SIZE(nvme_iopolicy_names))
+		iopolicy = READ_ONCE(subsys->iopolicy);
+	return sprintf(buf, "%s\n", nvme_iopolicy_names[iopolicy]);
+}
+
+static ssize_t nvme_subsys_iopolicy_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	enum nvme_iopolicy iopolicy = NVME_IOPOLICY_UNKNOWN;
+	struct nvme_subsystem *subsys =
+		container_of(dev, struct nvme_subsystem, dev);
+
+	if (!strncmp(buf, nvme_iopolicy_names[NVME_IOPOLICY_NUMA],
+		     strlen(nvme_iopolicy_names[NVME_IOPOLICY_NUMA])))
+		iopolicy = NVME_IOPOLICY_NUMA;
+	else if (!strncmp(buf, nvme_iopolicy_names[NVME_IOPOLICY_RR],
+		     strlen(nvme_iopolicy_names[NVME_IOPOLICY_RR])))
+		iopolicy = NVME_IOPOLICY_RR;
+
+	if (iopolicy == NVME_IOPOLICY_UNKNOWN)
+		return -EINVAL;
+
+	WRITE_ONCE(subsys->iopolicy, iopolicy);
+	return count;
+}
+SUBSYS_ATTR_RW(iopolicy, S_IRUGO | S_IWUSR,
+		      nvme_subsys_iopolicy_show, nvme_subsys_iopolicy_store);
+
 static ssize_t ana_grpid_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
@@ -495,6 +607,7 @@ void nvme_mpath_add_disk(struct nvme_ns *ns, struct nvme_id_ns *id)
 		mutex_lock(&ns->head->lock);
 		ns->ana_state = NVME_ANA_OPTIMIZED; 
 		nvme_mpath_set_live(ns);
+		kblockd_schedule_work(&ns->head->requeue_work);
 		mutex_unlock(&ns->head->lock);
 	}
 }
@@ -503,11 +616,9 @@ void nvme_mpath_remove_disk(struct nvme_ns_head *head)
 {
 	if (!head->disk)
 		return;
-	if (head->disk->flags & GENHD_FL_UP) {
-		sysfs_remove_group(&disk_to_dev(head->disk)->kobj,
-				   &nvme_ns_id_attr_group);
+	if (head->disk->flags & GENHD_FL_UP)
 		del_gendisk(head->disk);
-	}
+
 	blk_set_queue_dying(head->disk->queue);
 	/* make sure all pending bios are cleaned up */
 	kblockd_schedule_work(&head->requeue_work);
@@ -533,8 +644,7 @@ int nvme_mpath_init(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 		    (unsigned long)ctrl);
 	ctrl->ana_log_size = sizeof(struct nvme_ana_rsp_hdr) +
 		ctrl->nanagrpid * sizeof(struct nvme_ana_group_desc);
-	if (!(ctrl->anacap & (1 << 6)))
-		ctrl->ana_log_size += ctrl->max_namespaces * sizeof(__le32);
+	ctrl->ana_log_size += ctrl->max_namespaces * sizeof(__le32);
 
 	if (ctrl->ana_log_size > ctrl->max_hw_sectors << SECTOR_SHIFT) {
 		dev_err(ctrl->device,
@@ -556,6 +666,7 @@ int nvme_mpath_init(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 	return 0;
 out_free_ana_log_buf:
 	kfree(ctrl->ana_log_buf);
+	ctrl->ana_log_buf = NULL;
 out:
 	return -ENOMEM;
 }
@@ -563,5 +674,6 @@ out:
 void nvme_mpath_uninit(struct nvme_ctrl *ctrl)
 {
 	kfree(ctrl->ana_log_buf);
+	ctrl->ana_log_buf = NULL;
 }
 

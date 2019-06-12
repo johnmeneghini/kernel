@@ -2485,6 +2485,7 @@ static int ibridge_mci_bind_devs(struct mem_ctl_info *mci,
 		case PCI_DEVICE_ID_INTEL_IBRIDGE_IMC_HA0_TA:
 		case PCI_DEVICE_ID_INTEL_IBRIDGE_IMC_HA1_TA:
 			pvt->pci_ta = pdev;
+			break;
 		case PCI_DEVICE_ID_INTEL_IBRIDGE_IMC_HA0_RAS:
 		case PCI_DEVICE_ID_INTEL_IBRIDGE_IMC_HA1_RAS:
 			pvt->pci_ras = pdev;
@@ -2877,6 +2878,7 @@ static void sbridge_mce_output_error(struct mem_ctl_info *mci,
 		recoverable = GET_BITFIELD(m->status, 56, 56);
 
 	if (uncorrected_error) {
+		core_err_cnt = 1;
 		if (ripv) {
 			type = "FATAL";
 			tp_event = HW_EVENT_ERR_FATAL;

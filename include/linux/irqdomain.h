@@ -132,8 +132,8 @@ struct irq_domain_chip_generic;
  * @flags: host per irq_domain flags
  *
  * Optional elements
- * @of_node: Pointer to device tree nodes associated with the irq_domain. Used
- *           when decoding device tree interrupt specifiers.
+ * @fwnode: Pointer to firmware node associated with the irq_domain. Pretty easy
+ *          to swap it for the of_node via the irq_domain_get_of_node accessor
  * @gc: Pointer to a list of generic chips. There is a helper function for
  *      setting up one or more generic chips for interrupt controllers
  *      drivers using the generic chip library which uses this pointer.
@@ -435,6 +435,9 @@ extern void irq_domain_free_irqs_common(struct irq_domain *domain,
 					unsigned int nr_irqs);
 extern void irq_domain_free_irqs_top(struct irq_domain *domain,
 				     unsigned int virq, unsigned int nr_irqs);
+
+extern int irq_domain_push_irq(struct irq_domain *domain, int virq, void *arg);
+extern int irq_domain_pop_irq(struct irq_domain *domain, int virq);
 
 extern int irq_domain_alloc_irqs_parent(struct irq_domain *domain,
 					unsigned int irq_base,

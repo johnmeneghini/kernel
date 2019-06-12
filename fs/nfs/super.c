@@ -76,6 +76,12 @@
 #define NFS_DEFAULT_VERSION 2
 #endif
 
+#if CONFIG_SUSE_VERSION < 15 || (CONFIG_SUSE_VERSION == 15 && CONFIG_SUSE_PATCHLEVEL == 0)
+static int max_minor_version = 1;
+#else
+static int max_minor_version = 2;
+#endif
+
 #define NFS_MAX_CONNECTIONS 16
 
 enum {
@@ -1339,7 +1345,7 @@ static int nfs_parse_mount_options(char *raw,
 			mnt->options |= NFS_OPTION_MIGRATION;
 			break;
 		case Opt_nomigration:
-			mnt->options &= NFS_OPTION_MIGRATION;
+			mnt->options &= ~NFS_OPTION_MIGRATION;
 			break;
 
 		/*
@@ -1424,6 +1430,8 @@ static int nfs_parse_mount_options(char *raw,
 			if (nfs_get_option_ul(args, &option))
 				goto out_invalid_value;
 			if (option > NFS4_MAX_MINOR_VERSION)
+				goto out_invalid_value;
+			if (option > max_minor_version)
 				goto out_invalid_value;
 			mnt->minorversion = option;
 			break;
@@ -1932,7 +1940,7 @@ static int nfs_parse_devname(const char *dev_name,
 		/* kill possible hostname list: not supported */
 		comma = strchr(dev_name, ',');
 		if (comma != NULL && comma < end)
-			*comma = 0;
+			len = comma - dev_name;
 	}
 
 	if (len > maxnamlen)
@@ -2923,5 +2931,8 @@ MODULE_PARM_DESC(recover_lost_locks,
 		 "If the server reports that a lock might be lost, "
 		 "try to recover it risking data corruption.");
 
+module_param(max_minor_version, int, 0644);
+MODULE_PARM_DESC(max_minor_version,
+		 "Maximum NFSv4.x minor version that can be mounted");
 
 #endif /* CONFIG_NFS_V4 */

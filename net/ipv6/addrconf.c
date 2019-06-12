@@ -395,8 +395,6 @@ static struct inet6_dev *ipv6_add_dev(struct net_device *dev)
 
 	if (ndev->cnf.stable_secret.initialized)
 		ndev->cnf.addr_gen_mode = IN6_ADDR_GEN_MODE_STABLE_PRIVACY;
-	else
-		ndev->cnf.addr_gen_mode = ipv6_devconf_dflt.addr_gen_mode;
 
 	ndev->cnf.mtu6 = dev->mtu;
 	ndev->nd_parms = neigh_parms_alloc(dev, &nd_tbl);
@@ -1109,7 +1107,8 @@ check_cleanup_prefix_route(struct inet6_ifaddr *ifp, unsigned long *expires)
 	list_for_each_entry(ifa, &idev->addr_list, if_list) {
 		if (ifa == ifp)
 			continue;
-		if (!ipv6_prefix_equal(&ifa->addr, &ifp->addr,
+		if (ifa->prefix_len != ifp->prefix_len ||
+		    !ipv6_prefix_equal(&ifa->addr, &ifp->addr,
 				       ifp->prefix_len))
 			continue;
 		if (ifa->flags & (IFA_F_PERMANENT | IFA_F_NOPREFIXROUTE))
@@ -4163,7 +4162,6 @@ static struct inet6_ifaddr *if6_get_first(struct seq_file *seq, loff_t pos)
 				p++;
 				continue;
 			}
-			state->offset++;
 			return ifa;
 		}
 
@@ -4187,13 +4185,12 @@ static struct inet6_ifaddr *if6_get_next(struct seq_file *seq,
 		return ifa;
 	}
 
+	state->offset = 0;
 	while (++state->bucket < IN6_ADDR_HSIZE) {
-		state->offset = 0;
 		hlist_for_each_entry_rcu_bh(ifa,
 				     &inet6_addr_lst[state->bucket], addr_lst) {
 			if (!net_eq(dev_net(ifa->idev->dev), net))
 				continue;
-			state->offset++;
 			return ifa;
 		}
 	}
@@ -4822,8 +4819,8 @@ static int in6_dump_addrs(struct inet6_dev *idev, struct sk_buff *skb,
 
 		/* unicast address incl. temp addr */
 		list_for_each_entry(ifa, &idev->addr_list, if_list) {
-			if (++ip_idx < s_ip_idx)
-				continue;
+			if (ip_idx < s_ip_idx)
+				goto next;
 			err = inet6_fill_ifaddr(skb, ifa,
 						NETLINK_CB(cb->skb).portid,
 						cb->nlh->nlmsg_seq,
@@ -4832,6 +4829,8 @@ static int in6_dump_addrs(struct inet6_dev *idev, struct sk_buff *skb,
 			if (err < 0)
 				break;
 			nl_dump_check_consistent(cb, nlmsg_hdr(skb));
+next:
+			ip_idx++;
 		}
 		break;
 	}
@@ -5108,7 +5107,9 @@ static inline size_t inet6_ifla6_size(void)
 	     + nla_total_size(DEVCONF_MAX * 4) /* IFLA_INET6_CONF */
 	     + nla_total_size(IPSTATS_MIB_MAX * 8) /* IFLA_INET6_STATS */
 	     + nla_total_size(ICMP6_MIB_MAX * 8) /* IFLA_INET6_ICMP6STATS */
-	     + nla_total_size(sizeof(struct in6_addr)); /* IFLA_INET6_TOKEN */
+	     + nla_total_size(sizeof(struct in6_addr)) /* IFLA_INET6_TOKEN */
+	     + nla_total_size(1) /* IFLA_INET6_ADDR_GEN_MODE */
+	     + 0;
 }
 
 static inline size_t inet6_if_nlmsg_size(void)
@@ -5789,32 +5790,31 @@ static int addrconf_sysctl_addr_gen_mode(struct ctl_table *ctl, int write,
 					 loff_t *ppos)
 {
 	int ret = 0;
-	int new_val;
+	u32 new_val;
 	struct inet6_dev *idev = (struct inet6_dev *)ctl->extra1;
 	struct net *net = (struct net *)ctl->extra2;
+	struct ctl_table tmp = {
+		.data = &new_val,
+		.maxlen = sizeof(new_val),
+		.mode = ctl->mode,
+	};
 
 	if (!rtnl_trylock())
 		return restart_syscall();
 
-	ret = proc_dointvec(ctl, write, buffer, lenp, ppos);
+	new_val = *((u32 *)ctl->data);
+
+	ret = proc_douintvec(&tmp, write, buffer, lenp, ppos);
+	if (ret != 0)
+		goto out;
 
 	if (write) {
-		new_val = *((int *)ctl->data);
-
 		if (check_addr_gen_mode(new_val) < 0) {
 			ret = -EINVAL;
 			goto out;
 		}
 
-		/* request for default */
-		if (&net->ipv6.devconf_dflt->addr_gen_mode == ctl->data) {
-			ipv6_devconf_dflt.addr_gen_mode = new_val;
-
-		/* request for individual net device */
-		} else {
-			if (!idev)
-				goto out;
-
+		if (idev) {
 			if (check_stable_privacy(idev, net, new_val) < 0) {
 				ret = -EINVAL;
 				goto out;
@@ -5824,7 +5824,21 @@ static int addrconf_sysctl_addr_gen_mode(struct ctl_table *ctl, int write,
 				idev->cnf.addr_gen_mode = new_val;
 				addrconf_dev_config(idev->dev);
 			}
+		} else if (&net->ipv6.devconf_all->addr_gen_mode == ctl->data) {
+			struct net_device *dev;
+
+			net->ipv6.devconf_dflt->addr_gen_mode = new_val;
+			for_each_netdev(net, dev) {
+				idev = __in6_dev_get(dev);
+				if (idev &&
+				    idev->cnf.addr_gen_mode != new_val) {
+					idev->cnf.addr_gen_mode = new_val;
+					addrconf_dev_config(idev->dev);
+				}
+			}
 		}
+
+		*((u32 *)ctl->data) = new_val;
 	}
 
 out:

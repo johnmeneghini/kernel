@@ -125,10 +125,20 @@ static void ghes_edac_dmidecode(const struct dmi_header *dh, void *arg)
 			dimm->mtype = MEM_FB_DDR2;
 			break;
 		case 0x18:
-			if (entry->type_detail & 1 << 13)
+			if (entry->type_detail & 1 << 12)
+				dimm->mtype = MEM_NVDIMM;
+			else if (entry->type_detail & 1 << 13)
 				dimm->mtype = MEM_RDDR3;
 			else
 				dimm->mtype = MEM_DDR3;
+			break;
+		case 0x1a:
+			if (entry->type_detail & 1 << 12)
+				dimm->mtype = MEM_NVDIMM;
+			else if (entry->type_detail & 1 << 13)
+				dimm->mtype = MEM_RDDR4;
+			else
+				dimm->mtype = MEM_DDR4;
 			break;
 		default:
 			if (entry->type_detail & 1 << 6)
@@ -185,10 +195,8 @@ void ghes_edac_report_mem_error(struct ghes *ghes, int sev,
 	char *p;
 	u8 grain_bits;
 
-	if (!pvt) {
-		pr_err("Internal error: Can't find EDAC structure\n");
+	if (!pvt)
 		return;
-	}
 
 	/*
 	 * We can do the locking below because GHES defers error processing
@@ -441,7 +449,7 @@ int ghes_edac_register(struct ghes *ghes, struct device *dev)
 	/* Check if safe to enable on this system */
 	idx = acpi_match_platform_list(plat_list);
 	if (!force_load && idx < 0)
-		return 0;
+		return -ENODEV;
 
 	/*
 	 * We have only one logical memory controller to which all DIMMs belong.

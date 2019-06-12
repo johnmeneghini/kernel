@@ -133,6 +133,11 @@ struct cpuinfo_x86 {
 	u32			microcode;
 #ifndef __GENKSYMS__
 	unsigned		initialized : 1;
+	/*
+	 * Address space bits used by the cache internally
+	 * NOTE: only to be used for l1tf mitigation
+	 */
+	u8			x86_cache_bits;
 #endif
 };
 
@@ -182,9 +187,9 @@ extern const struct seq_operations cpuinfo_op;
 
 extern void cpu_detect(struct cpuinfo_x86 *c);
 
-static inline unsigned long l1tf_pfn_limit(void)
+static inline unsigned long long l1tf_pfn_limit(void)
 {
-	return BIT(boot_cpu_data.x86_phys_bits - 1 - PAGE_SHIFT) - 1;
+	return BIT_ULL(boot_cpu_data.x86_cache_bits - 1 - PAGE_SHIFT);
 }
 
 extern void early_cpu_init(void);
@@ -839,6 +844,7 @@ static inline void spin_lock_prefetch(const void *x)
 #define IA32_PAGE_OFFSET	PAGE_OFFSET
 #define TASK_SIZE		PAGE_OFFSET
 #define TASK_SIZE_MAX		TASK_SIZE
+#define DEFAULT_MAP_WINDOW	TASK_SIZE
 #define STACK_TOP		TASK_SIZE
 #define STACK_TOP_MAX		STACK_TOP
 
@@ -871,6 +877,8 @@ static inline void spin_lock_prefetch(const void *x)
  * With page table isolation enabled, we map the LDT in ... [stay tuned]
  */
 #define TASK_SIZE_MAX	((1UL << 47) - PAGE_SIZE)
+
+#define DEFAULT_MAP_WINDOW	TASK_SIZE_MAX
 
 /* This decides where the kernel will search for a free chunk of vm
  * space during mmap's.
@@ -963,6 +971,7 @@ bool xen_set_default_idle(void);
 
 void stop_this_cpu(void *dummy);
 void df_debug(struct pt_regs *regs, long error_code);
+void microcode_check(void);
 
 enum l1tf_mitigations {
 	L1TF_MITIGATION_OFF,
@@ -974,5 +983,11 @@ enum l1tf_mitigations {
 };
 
 extern enum l1tf_mitigations l1tf_mitigation;
+
+enum mds_mitigations {
+	MDS_MITIGATION_OFF,
+	MDS_MITIGATION_FULL,
+	MDS_MITIGATION_VMWERV,
+};
 
 #endif /* _ASM_X86_PROCESSOR_H */

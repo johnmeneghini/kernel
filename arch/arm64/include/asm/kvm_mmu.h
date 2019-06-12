@@ -175,18 +175,15 @@ static inline pmd_t kvm_s2pmd_mkwrite(pmd_t pmd)
 
 static inline void kvm_set_s2pte_readonly(pte_t *pte)
 {
-	pteval_t pteval;
-	unsigned long tmp;
+	pteval_t old_pteval, pteval;
 
-	asm volatile("//	kvm_set_s2pte_readonly\n"
-	"	prfm	pstl1strm, %2\n"
-	"1:	ldxr	%0, %2\n"
-	"	and	%0, %0, %3		// clear PTE_S2_RDWR\n"
-	"	orr	%0, %0, %4		// set PTE_S2_RDONLY\n"
-	"	stxr	%w1, %0, %2\n"
-	"	cbnz	%w1, 1b\n"
-	: "=&r" (pteval), "=&r" (tmp), "+Q" (pte_val(*pte))
-	: "L" (~PTE_S2_RDWR), "L" (PTE_S2_RDONLY));
+	pteval = READ_ONCE(pte_val(*pte));
+	do {
+		old_pteval = pteval;
+		pteval &= ~PTE_S2_RDWR;
+		pteval |= PTE_S2_RDONLY;
+		pteval = cmpxchg_relaxed(&pte_val(*pte), old_pteval, pteval);
+	} while (pteval != old_pteval);
 }
 
 static inline bool kvm_s2pte_readonly(pte_t *pte)
@@ -326,6 +323,22 @@ static inline unsigned int kvm_get_vmid_bits(void)
 }
 
 #define kvm_phys_to_vttbr(addr)		phys_to_ttbr(addr)
+
+/*
+ * We are not in the kvm->srcu critical section most of the time, so we take
+ * the SRCU read lock here. Since we copy the data from the user page, we
+ * can immediately drop the lock again.
+ */
+static inline int kvm_read_guest_lock(struct kvm *kvm,
+				      gpa_t gpa, void *data, unsigned long len)
+{
+	int srcu_idx = srcu_read_lock(&kvm->srcu);
+	int ret = kvm_read_guest(kvm, gpa, data, len);
+
+	srcu_read_unlock(&kvm->srcu, srcu_idx);
+
+	return ret;
+}
 
 #ifdef CONFIG_HARDEN_BRANCH_PREDICTOR
 #include <asm/mmu.h>

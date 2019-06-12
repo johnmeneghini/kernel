@@ -1110,13 +1110,16 @@ static int ahash_final_no_ctx(struct ahash_request *req)
 
 	desc = edesc->hw_desc;
 
-	state->buf_dma = dma_map_single(jrdev, buf, buflen, DMA_TO_DEVICE);
-	if (dma_mapping_error(jrdev, state->buf_dma)) {
-		dev_err(jrdev, "unable to map src\n");
-		goto unmap;
-	}
+	if (buflen) {
+		state->buf_dma = dma_map_single(jrdev, buf, buflen,
+						DMA_TO_DEVICE);
+		if (dma_mapping_error(jrdev, state->buf_dma)) {
+			dev_err(jrdev, "unable to map src\n");
+			goto unmap;
+		}
 
-	append_seq_in_ptr(desc, state->buf_dma, buflen, 0);
+		append_seq_in_ptr(desc, state->buf_dma, buflen, 0);
+	}
 
 	edesc->dst_dma = map_seq_out_ptr_result(desc, jrdev, req->result,
 						digestsize);
@@ -1836,7 +1839,6 @@ static int __init caam_algapi_hash_init(void)
 {
 	struct device_node *dev_node;
 	struct platform_device *pdev;
-	struct device *ctrldev;
 	int i = 0, err = 0;
 	struct caam_drv_private *priv;
 	unsigned int md_limit = SHA512_DIGEST_SIZE;
@@ -1855,16 +1857,17 @@ static int __init caam_algapi_hash_init(void)
 		return -ENODEV;
 	}
 
-	ctrldev = &pdev->dev;
-	priv = dev_get_drvdata(ctrldev);
+	priv = dev_get_drvdata(&pdev->dev);
 	of_node_put(dev_node);
 
 	/*
 	 * If priv is NULL, it's probably because the caam driver wasn't
 	 * properly initialized (e.g. RNG4 init failed). Thus, bail out here.
 	 */
-	if (!priv)
-		return -ENODEV;
+	if (!priv) {
+		err = -ENODEV;
+		goto out_put_dev;
+	}
 
 	/*
 	 * Register crypto algorithms the device supports.  First, identify
@@ -1877,8 +1880,10 @@ static int __init caam_algapi_hash_init(void)
 	 * Skip registration of any hashing algorithms if MD block
 	 * is not present.
 	 */
-	if (!((cha_inst & CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT))
-		return -ENODEV;
+	if (!((cha_inst & CHA_ID_LS_MD_MASK) >> CHA_ID_LS_MD_SHIFT)) {
+		err = -ENODEV;
+		goto out_put_dev;
+	}
 
 	/* Limit digest size based on LP256 */
 	if ((cha_vid & CHA_ID_LS_MD_MASK) == CHA_ID_LS_MD_LP256)
@@ -1930,6 +1935,8 @@ static int __init caam_algapi_hash_init(void)
 			list_add_tail(&t_alg->entry, &hash_list);
 	}
 
+out_put_dev:
+	put_device(&pdev->dev);
 	return err;
 }
 

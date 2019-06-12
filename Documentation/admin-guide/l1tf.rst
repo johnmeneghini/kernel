@@ -17,9 +17,7 @@ vulnerability is not present on:
    - Older processor models, where the CPU family is < 6
 
    - A range of Intel ATOM processors (Cedarview, Cloverview, Lincroft,
-     Penwell, Pineview, Slivermont, Airmont, Merrifield)
-
-   - The Intel Core Duo Yonah variants (2006 - 2008)
+     Penwell, Pineview, Silvermont, Airmont, Merrifield)
 
    - The Intel XEON PHI family
 
@@ -113,7 +111,7 @@ Attack scenarios
    deployment scenario. The mitigations, their protection scope and impact
    are described in the next sections.
 
-   The default mitigations and the rationale for chosing them are explained
+   The default mitigations and the rationale for choosing them are explained
    at the end of this document. See :ref:`default_mitigations`.
 
 .. _l1tf_sys_info:
@@ -191,15 +189,15 @@ Guest mitigation mechanisms
     - unconditional ('always')
 
    The conditional mode avoids L1D flushing after VMEXITs which execute
-   only audited code pathes before the corresponding VMENTER. These code
-   pathes have beed verified that they cannot expose secrets or other
+   only audited code paths before the corresponding VMENTER. These code
+   paths have been verified that they cannot expose secrets or other
    interesting data to an attacker, but they can leak information about the
    address space layout of the hypervisor.
 
    Unconditional mode flushes L1D on all VMENTER invocations and provides
    maximum protection. It has a higher overhead than the conditional
    mode. The overhead cannot be quantified correctly as it depends on the
-   work load scenario and the resulting number of VMEXITs.
+   workload scenario and the resulting number of VMEXITs.
 
    The general recommendation is to enable L1D flush on VMENTER. The kernel
    defaults to conditional mode on affected processors.
@@ -262,7 +260,7 @@ Guest mitigation mechanisms
    Whether the interrupts with are affine to CPUs, which run untrusted
    guests, provide interesting data for an attacker depends on the system
    configuration and the scenarios which run on the system. While for some
-   of the interrupts it can be assumed that they wont expose interesting
+   of the interrupts it can be assumed that they won't expose interesting
    information beyond exposing hints about the host OS memory layout, there
    is no way to make general assumptions.
 
@@ -299,7 +297,7 @@ Guest mitigation mechanisms
 		 to be brought up at least partially and are then shut down
 		 again.  "nosmt" can be undone via the sysfs interface.
 
-     nosmt=force Has the same effect as "nosmt' but it does not allow to
+     nosmt=force Has the same effect as "nosmt" but it does not allow to
 		 undo the SMT disable via the sysfs interface.
      =========== ==========================================================
 
@@ -407,6 +405,9 @@ time with the option "l1tf=". The valid arguments for this option are:
 
   off		Disables hypervisor mitigations and doesn't emit any
 		warnings.
+		It also drops the swap size and available RAM limit restrictions
+		on both hypervisor and bare metal.
+
   ============  =============================================================
 
 The default is 'flush'. For details about L1D flushing see :ref:`l1d_flush`.
@@ -548,6 +549,27 @@ available:
     EPT can be disabled in the hypervisor via the 'kvm-intel.ept'
     parameter.
 
+3.4. Nested virtual machines
+""""""""""""""""""""""""""""
+
+When nested virtualization is in use, three operating systems are involved:
+the bare metal hypervisor, the nested hypervisor and the nested virtual
+machine.  VMENTER operations from the nested hypervisor into the nested
+guest will always be processed by the bare metal hypervisor. If KVM is the
+bare metal hypervisor it will:
+
+ - Flush the L1D cache on every switch from the nested hypervisor to the
+   nested virtual machine, so that the nested hypervisor's secrets are not
+   exposed to the nested virtual machine;
+
+ - Flush the L1D cache on every switch from the nested virtual machine to
+   the nested hypervisor; this is a complex operation, and flushing the L1D
+   cache avoids that the bare metal hypervisor's secrets are exposed to the
+   nested virtual machine;
+
+ - Instruct the nested hypervisor to not perform any L1D cache flush. This
+   is an optimization to avoid double L1D flushing.
+
 
 .. _default_mitigations:
 
@@ -557,7 +579,8 @@ Default mitigations
   The kernel default mitigations for vulnerable processors are:
 
   - PTE inversion to protect against malicious user space. This is done
-    unconditionally and cannot be controlled.
+    unconditionally and cannot be controlled. The swap storage is limited
+    to ~16TB.
 
   - L1D conditional flushing on VMENTER when EPT is enabled for
     a guest.

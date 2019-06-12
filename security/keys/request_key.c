@@ -308,11 +308,12 @@ static int construct_get_dest_keyring(struct key **_dest_keyring)
 
 		case KEY_REQKEY_DEFL_USER_SESSION_KEYRING:
 			dest_keyring =
-				key_get(cred->user->session_keyring);
+				key_get(READ_ONCE(cred->user->session_keyring));
 			break;
 
 		case KEY_REQKEY_DEFL_USER_KEYRING:
-			dest_keyring = key_get(cred->user->uid_keyring);
+			dest_keyring =
+				key_get(READ_ONCE(cred->user->uid_keyring));
 			break;
 
 		case KEY_REQKEY_DEFL_GROUP_KEYRING:
@@ -545,6 +546,7 @@ struct key *request_key_and_link(struct key_type *type,
 	struct keyring_search_context ctx = {
 		.index_key.type		= type,
 		.index_key.description	= description,
+		.index_key.desc_len	= strlen(description),
 		.cred			= current_cred(),
 		.match_data.cmp		= key_default_cmp,
 		.match_data.raw_data	= description,

@@ -351,10 +351,8 @@ static int xts_ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
 	int ret = 0;
 
 	if (keylen != 2 * AES_MIN_KEY_SIZE  && keylen != 2 * AES_MAX_KEY_SIZE) {
-		crypto_ablkcipher_set_flags(ablkcipher,
-					    CRYPTO_TFM_RES_BAD_KEY_LEN);
 		dev_err(jrdev, "key size mismatch\n");
-		return -EINVAL;
+		goto badkey;
 	}
 
 	memcpy(ctx->key, key, keylen);
@@ -389,7 +387,7 @@ static int xts_ablkcipher_setkey(struct crypto_ablkcipher *ablkcipher,
 	return ret;
 badkey:
 	crypto_ablkcipher_set_flags(ablkcipher, CRYPTO_TFM_RES_BAD_KEY_LEN);
-	return 0;
+	return -EINVAL;
 }
 
 /*
@@ -2317,8 +2315,10 @@ static int __init caam_qi_algapi_init(void)
 	 * If priv is NULL, it's probably because the caam driver wasn't
 	 * properly initialized (e.g. RNG4 init failed). Thus, bail out here.
 	 */
-	if (!priv || !priv->qi_present)
-		return -ENODEV;
+	if (!priv || !priv->qi_present) {
+		err = -ENODEV;
+		goto out_put_dev;
+	}
 
 	INIT_LIST_HEAD(&alg_list);
 
@@ -2421,6 +2421,8 @@ static int __init caam_qi_algapi_init(void)
 	if (registered)
 		dev_info(priv->qidev, "algorithms registered in /proc/crypto\n");
 
+out_put_dev:
+	put_device(ctrldev);
 	return err;
 }
 

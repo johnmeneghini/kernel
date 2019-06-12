@@ -200,6 +200,7 @@ xfs_attr_set(
 	int			flags)
 {
 	struct xfs_mount	*mp = dp->i_mount;
+	struct xfs_buf		*leaf_bp = NULL;
 	struct xfs_da_args	args;
 	struct xfs_defer_ops	dfops;
 	struct xfs_trans_res	tres;
@@ -315,24 +316,31 @@ xfs_attr_set(
 		 * GROT: another possible req'mt for a double-split btree op.
 		 */
 		xfs_defer_init(args.dfops, args.firstblock);
-		error = xfs_attr_shortform_to_leaf(&args);
-		if (!error)
-			error = xfs_defer_finish(&args.trans, args.dfops, dp);
-		if (error) {
-			args.trans = NULL;
-			xfs_defer_cancel(&dfops);
-			goto out;
-		}
+		error = xfs_attr_shortform_to_leaf(&args, &leaf_bp);
+		if (error)
+			goto out_defer_cancel;
+		/*
+		 * Prevent the leaf buffer from being unlocked so that a
+		 * concurrent AIL push cannot grab the half-baked leaf
+		 * buffer and run into problems with the write verifier.
+		 */
+		xfs_trans_bhold(args.trans, leaf_bp);
+		xfs_defer_bjoin(args.dfops, leaf_bp);
+		xfs_defer_ijoin(args.dfops, dp);
+		error = xfs_defer_finish(&args.trans, args.dfops);
+		if (error)
+			goto out_defer_cancel;
 
 		/*
 		 * Commit the leaf transformation.  We'll need another (linked)
-		 * transaction to add the new attribute to the leaf.
+		 * transaction to add the new attribute to the leaf, which
+		 * means that we have to hold & join the leaf buffer here too.
 		 */
-
-		error = xfs_trans_roll(&args.trans, dp);
+		error = xfs_trans_roll_inode(&args.trans, dp);
 		if (error)
 			goto out;
-
+		xfs_trans_bjoin(args.trans, leaf_bp);
+		leaf_bp = NULL;
 	}
 
 	if (xfs_bmap_one_block(dp, XFS_ATTR_FORK))
@@ -361,7 +369,11 @@ xfs_attr_set(
 
 	return error;
 
+out_defer_cancel:
+	xfs_defer_cancel(&dfops);
 out:
+	if (leaf_bp)
+		xfs_trans_brelse(args.trans, leaf_bp);
 	if (args.trans)
 		xfs_trans_cancel(args.trans);
 	xfs_iunlock(dp, XFS_ILOCK_EXCL);
@@ -487,7 +499,14 @@ xfs_attr_shortform_addname(xfs_da_args_t *args)
 		if (args->flags & ATTR_CREATE)
 			return retval;
 		retval = xfs_attr_shortform_remove(args);
-		ASSERT(retval == 0);
+		if (retval)
+			return retval;
+		/*
+		 * Since we have removed the old attr, clear ATTR_REPLACE so
+		 * that the leaf format add routine won't trip over the attr
+		 * not being around.
+		 */
+		args->flags &= ~ATTR_REPLACE;
 	}
 
 	if (args->namelen >= XFS_ATTR_SF_ENTSIZE_MAX ||
@@ -581,19 +600,18 @@ xfs_attr_leaf_addname(xfs_da_args_t *args)
 		 */
 		xfs_defer_init(args->dfops, args->firstblock);
 		error = xfs_attr3_leaf_to_node(args);
-		if (!error)
-			error = xfs_defer_finish(&args->trans, args->dfops, dp);
-		if (error) {
-			args->trans = NULL;
-			xfs_defer_cancel(args->dfops);
-			return error;
-		}
+		if (error)
+			goto out_defer_cancel;
+		xfs_defer_ijoin(args->dfops, dp);
+		error = xfs_defer_finish(&args->trans, args->dfops);
+		if (error)
+			goto out_defer_cancel;
 
 		/*
 		 * Commit the current trans (including the inode) and start
 		 * a new one.
 		 */
-		error = xfs_trans_roll(&args->trans, dp);
+		error = xfs_trans_roll_inode(&args->trans, dp);
 		if (error)
 			return error;
 
@@ -608,7 +626,7 @@ xfs_attr_leaf_addname(xfs_da_args_t *args)
 	 * Commit the transaction that added the attr name so that
 	 * later routines can manage their own transactions.
 	 */
-	error = xfs_trans_roll(&args->trans, dp);
+	error = xfs_trans_roll_inode(&args->trans, dp);
 	if (error)
 		return error;
 
@@ -672,20 +690,18 @@ xfs_attr_leaf_addname(xfs_da_args_t *args)
 			xfs_defer_init(args->dfops, args->firstblock);
 			error = xfs_attr3_leaf_to_shortform(bp, args, forkoff);
 			/* bp is gone due to xfs_da_shrink_inode */
-			if (!error)
-				error = xfs_defer_finish(&args->trans,
-							args->dfops, dp);
-			if (error) {
-				args->trans = NULL;
-				xfs_defer_cancel(args->dfops);
-				return error;
-			}
+			if (error)
+				goto out_defer_cancel;
+			xfs_defer_ijoin(args->dfops, dp);
+			error = xfs_defer_finish(&args->trans, args->dfops);
+			if (error)
+				goto out_defer_cancel;
 		}
 
 		/*
 		 * Commit the remove and start the next trans in series.
 		 */
-		error = xfs_trans_roll(&args->trans, dp);
+		error = xfs_trans_roll_inode(&args->trans, dp);
 
 	} else if (args->rmtblkno > 0) {
 		/*
@@ -693,6 +709,10 @@ xfs_attr_leaf_addname(xfs_da_args_t *args)
 		 */
 		error = xfs_attr3_leaf_clearflag(args);
 	}
+	return error;
+out_defer_cancel:
+	xfs_defer_cancel(args->dfops);
+	args->trans = NULL;
 	return error;
 }
 
@@ -735,15 +755,18 @@ xfs_attr_leaf_removename(xfs_da_args_t *args)
 		xfs_defer_init(args->dfops, args->firstblock);
 		error = xfs_attr3_leaf_to_shortform(bp, args, forkoff);
 		/* bp is gone due to xfs_da_shrink_inode */
-		if (!error)
-			error = xfs_defer_finish(&args->trans, args->dfops, dp);
-		if (error) {
-			args->trans = NULL;
-			xfs_defer_cancel(args->dfops);
-			return error;
-		}
+		if (error)
+			goto out_defer_cancel;
+		xfs_defer_ijoin(args->dfops, dp);
+		error = xfs_defer_finish(&args->trans, args->dfops);
+		if (error)
+			goto out_defer_cancel;
 	}
 	return 0;
+out_defer_cancel:
+	xfs_defer_cancel(args->dfops);
+	args->trans = NULL;
+	return error;
 }
 
 /*
@@ -860,20 +883,18 @@ restart:
 			state = NULL;
 			xfs_defer_init(args->dfops, args->firstblock);
 			error = xfs_attr3_leaf_to_node(args);
-			if (!error)
-				error = xfs_defer_finish(&args->trans,
-							args->dfops, dp);
-			if (error) {
-				args->trans = NULL;
-				xfs_defer_cancel(args->dfops);
-				goto out;
-			}
+			if (error)
+				goto out_defer_cancel;
+			xfs_defer_ijoin(args->dfops, dp);
+			error = xfs_defer_finish(&args->trans, args->dfops);
+			if (error)
+				goto out_defer_cancel;
 
 			/*
 			 * Commit the node conversion and start the next
 			 * trans in the chain.
 			 */
-			error = xfs_trans_roll(&args->trans, dp);
+			error = xfs_trans_roll_inode(&args->trans, dp);
 			if (error)
 				goto out;
 
@@ -888,13 +909,12 @@ restart:
 		 */
 		xfs_defer_init(args->dfops, args->firstblock);
 		error = xfs_da3_split(state);
-		if (!error)
-			error = xfs_defer_finish(&args->trans, args->dfops, dp);
-		if (error) {
-			args->trans = NULL;
-			xfs_defer_cancel(args->dfops);
-			goto out;
-		}
+		if (error)
+			goto out_defer_cancel;
+		xfs_defer_ijoin(args->dfops, dp);
+		error = xfs_defer_finish(&args->trans, args->dfops);
+		if (error)
+			goto out_defer_cancel;
 	} else {
 		/*
 		 * Addition succeeded, update Btree hashvals.
@@ -913,7 +933,7 @@ restart:
 	 * Commit the leaf addition or btree split and start the next
 	 * trans in the chain.
 	 */
-	error = xfs_trans_roll(&args->trans, dp);
+	error = xfs_trans_roll_inode(&args->trans, dp);
 	if (error)
 		goto out;
 
@@ -987,20 +1007,18 @@ restart:
 		if (retval && (state->path.active > 1)) {
 			xfs_defer_init(args->dfops, args->firstblock);
 			error = xfs_da3_join(state);
-			if (!error)
-				error = xfs_defer_finish(&args->trans,
-							args->dfops, dp);
-			if (error) {
-				args->trans = NULL;
-				xfs_defer_cancel(args->dfops);
-				goto out;
-			}
+			if (error)
+				goto out_defer_cancel;
+			xfs_defer_ijoin(args->dfops, dp);
+			error = xfs_defer_finish(&args->trans, args->dfops);
+			if (error)
+				goto out_defer_cancel;
 		}
 
 		/*
 		 * Commit and start the next trans in the chain.
 		 */
-		error = xfs_trans_roll(&args->trans, dp);
+		error = xfs_trans_roll_inode(&args->trans, dp);
 		if (error)
 			goto out;
 
@@ -1020,6 +1038,10 @@ out:
 	if (error)
 		return error;
 	return retval;
+out_defer_cancel:
+	xfs_defer_cancel(args->dfops);
+	args->trans = NULL;
+	goto out;
 }
 
 /*
@@ -1110,17 +1132,16 @@ xfs_attr_node_removename(xfs_da_args_t *args)
 	if (retval && (state->path.active > 1)) {
 		xfs_defer_init(args->dfops, args->firstblock);
 		error = xfs_da3_join(state);
-		if (!error)
-			error = xfs_defer_finish(&args->trans, args->dfops, dp);
-		if (error) {
-			args->trans = NULL;
-			xfs_defer_cancel(args->dfops);
-			goto out;
-		}
+		if (error)
+			goto out_defer_cancel;
+		xfs_defer_ijoin(args->dfops, dp);
+		error = xfs_defer_finish(&args->trans, args->dfops);
+		if (error)
+			goto out_defer_cancel;
 		/*
 		 * Commit the Btree join operation and start a new trans.
 		 */
-		error = xfs_trans_roll(&args->trans, dp);
+		error = xfs_trans_roll_inode(&args->trans, dp);
 		if (error)
 			goto out;
 	}
@@ -1144,14 +1165,12 @@ xfs_attr_node_removename(xfs_da_args_t *args)
 			xfs_defer_init(args->dfops, args->firstblock);
 			error = xfs_attr3_leaf_to_shortform(bp, args, forkoff);
 			/* bp is gone due to xfs_da_shrink_inode */
-			if (!error)
-				error = xfs_defer_finish(&args->trans,
-							args->dfops, dp);
-			if (error) {
-				args->trans = NULL;
-				xfs_defer_cancel(args->dfops);
-				goto out;
-			}
+			if (error)
+				goto out_defer_cancel;
+			xfs_defer_ijoin(args->dfops, dp);
+			error = xfs_defer_finish(&args->trans, args->dfops);
+			if (error)
+				goto out_defer_cancel;
 		} else
 			xfs_trans_brelse(args->trans, bp);
 	}
@@ -1160,6 +1179,10 @@ xfs_attr_node_removename(xfs_da_args_t *args)
 out:
 	xfs_da_state_free(state);
 	return error;
+out_defer_cancel:
+	xfs_defer_cancel(args->dfops);
+	args->trans = NULL;
+	goto out;
 }
 
 /*
