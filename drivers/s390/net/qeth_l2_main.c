@@ -882,8 +882,7 @@ static netdev_tx_t qeth_l2_hard_start_xmit(struct sk_buff *skb,
 
 tx_drop:
 	card->stats.tx_dropped++;
-	card->stats.tx_errors++;
-	dev_kfree_skb_any(skb);
+	kfree_skb(skb);
 	netif_wake_queue(dev);
 	return NETDEV_TX_OK;
 }
@@ -2053,7 +2052,7 @@ static void qeth_bridgeport_an_set_cb(void *priv,
 
 	l2entry = (struct qdio_brinfo_entry_l2 *)entry;
 	code = IPA_ADDR_CHANGE_CODE_MACADDR;
-	if (l2entry->addr_lnid.lnid)
+	if (l2entry->addr_lnid.lnid < VLAN_N_VID)
 		code |= IPA_ADDR_CHANGE_CODE_VLANID;
 	qeth_bridge_emit_host_event(card, anev_reg_unreg, code,
 		(struct net_if_token *)&l2entry->nit,

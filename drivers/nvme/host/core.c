@@ -1474,6 +1474,9 @@ static void nvme_update_disk_info(struct gendisk *disk,
 	sector_t capacity = le64_to_cpup(&id->nsze) << (ns->lba_shift - 9);
 	unsigned short bs = 1 << ns->lba_shift;
 
+	if (ns->ctrl->state != NVME_CTRL_LIVE)
+		return;
+
 	blk_mq_freeze_queue(disk->queue);
 	blk_integrity_unregister(disk);
 
@@ -2095,15 +2098,13 @@ static void nvme_init_subnqn(struct nvme_subsystem *subsys, struct nvme_ctrl *ct
 	memset(subsys->subnqn + off, 0, sizeof(subsys->subnqn) - off);
 }
 
-static void __nvme_release_subsystem(struct nvme_subsystem *subsys)
-{
-	ida_simple_remove(&nvme_subsystems_ida, subsys->instance);
-	kfree(subsys);
-}
-
 static void nvme_release_subsystem(struct device *dev)
 {
-	__nvme_release_subsystem(container_of(dev, struct nvme_subsystem, dev));
+	struct nvme_subsystem *subsys =
+		container_of(dev, struct nvme_subsystem, dev);
+
+	ida_simple_remove(&nvme_subsystems_ida, subsys->instance);
+	kfree(subsys);
 }
 
 static void nvme_destroy_subsystem(struct kref *ref)
@@ -2259,7 +2260,7 @@ static int nvme_init_subsystem(struct nvme_ctrl *ctrl, struct nvme_id_ctrl *id)
 			goto out_unlock;
 		}
 
-		__nvme_release_subsystem(subsys);
+		put_device(&subsys->dev);
 		subsys = found;
 	} else {
 		ret = device_add(&subsys->dev);
@@ -2407,6 +2408,7 @@ int nvme_init_identify(struct nvme_ctrl *ctrl)
 
 	ctrl->oacs = le16_to_cpu(id->oacs);
 	ctrl->oncs = le16_to_cpup(&id->oncs);
+	ctrl->mtfa = le16_to_cpu(id->mtfa);
 	ctrl->oaes = le32_to_cpu(id->oaes);
 	atomic_set(&ctrl->abort_limit, id->acl + 1);
 	ctrl->vwc = id->vwc;
