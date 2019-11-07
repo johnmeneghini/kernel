@@ -228,6 +228,8 @@ static blk_status_t nvme_error_status(struct request *req)
 		return BLK_STS_PROTECTION;
 	case NVME_SC_RESERVATION_CONFLICT:
 		return BLK_STS_NEXUS;
+	case NVME_SC_CMD_INTERRUPTED:
+		return BLK_STS_DEV_RESOURCE;
 	default:
 		return BLK_STS_IOERR;
 	}

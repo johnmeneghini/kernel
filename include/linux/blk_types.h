@@ -78,6 +78,7 @@ static inline bool blk_path_error(blk_status_t error)
 	case BLK_STS_NEXUS:
 	case BLK_STS_MEDIUM:
 	case BLK_STS_PROTECTION:
+	case BLK_STS_RESOURCE:
 		return false;
 	}
 
