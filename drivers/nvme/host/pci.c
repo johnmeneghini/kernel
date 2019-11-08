@@ -29,6 +29,7 @@
 #include <linux/types.h>
 #include <linux/io-64-nonatomic-lo-hi.h>
 #include <linux/sed-opal.h>
+#include <linux/msi.h>
 
 #include "nvme.h"
 
@@ -1969,6 +1970,10 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	if (nr_io_queues <= 0)
 		return -EIO;
 	dev->max_qid = nr_io_queues;
+
+#ifdef CONFIG_GENERIC_MSI_IRQ
+	suse_msi_set_irq_unmanaged(dev->dev);
+#endif
 
 	/*
 	 * Should investigate if there's a performance win from allocating
