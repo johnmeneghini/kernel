@@ -318,7 +318,7 @@ static enum blk_eh_timer_return nbd_xmit_timeout(struct request *req,
 			}
 			blk_mq_requeue_request(req, true);
 			nbd_config_put(nbd);
-			return BLK_EH_NOT_HANDLED;
+			return BLK_EH_DONE;
 		}
 	} else {
 		dev_err_ratelimited(nbd_to_dev(nbd),
@@ -1110,7 +1110,7 @@ static void nbd_clear_sock_ioctl(struct nbd_device *nbd,
 				 struct block_device *bdev)
 {
 	sock_shutdown(nbd);
-	kill_bdev(bdev);
+	__invalidate_device(bdev, true);
 	nbd_bdev_reset(bdev);
 	if (test_and_clear_bit(NBD_HAS_CONFIG_REF,
 			       &nbd->config->runtime_flags))
