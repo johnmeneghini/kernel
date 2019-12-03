@@ -279,6 +279,8 @@ void nvme_complete_rq(struct request *req)
 		}
 
 		if (!blk_queue_dying(req->q)) {
+			printk_ratelimited(KERN_WARNING
+				"Entering nvme_retry_req\n");
 			nvme_retry_req(req);
 			return;
 		}
